@@ -1,0 +1,135 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Compilar APK de Android
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-34
+            build-tools;34.0.0
+
+      - name: Crear package.json
+        run: |
+          cat > package.json <<'EOF'
+          {
+            "name": "mi-app",
+            "version": "1.0.0",
+            "private": true,
+            "scripts": {
+              "build": "node scripts/copy-assets.js",
+              "sync": "npm run build && npx cap sync android"
+            },
+            "dependencies": {
+              "@capacitor/android": "^6.1.2",
+              "@capacitor/core": "^6.1.2"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^6.1.2",
+              "typescript": "^5.4.5"
+            }
+          }
+          EOF
+
+      - name: Crear capacitor.config.ts
+        run: |
+          cat > capacitor.config.ts <<'EOF'
+          import type { CapacitorConfig } from '@capacitor/cli';
+          const config: CapacitorConfig = {
+            appId: 'com.ejemplo.miapp',
+            appName: 'Mi App',
+            webDir: 'www'
+          };
+          export default config;
+          EOF
+
+      - name: Crear carpeta src y scripts
+        run: mkdir -p src scripts
+
+      - name: Crear scripts/copy-assets.js
+        run: |
+          cat > scripts/copy-assets.js <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const SRC = path.join(__dirname, '..', 'src');
+          const DST = path.join(__dirname, '..', 'www');
+          if (!fs.existsSync(DST)) fs.mkdirSync(DST, { recursive: true });
+          ['index.html', 'styles.css', 'app.js'].forEach(f => {
+            fs.copyFileSync(path.join(SRC, f), path.join(DST, f));
+          });
+          console.log('Build web completo.');
+          EOF
+
+      - name: Crear src/index.html (placeholder)
+        run: |
+          cat > src/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="es">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+            <title>Mi App</title>
+            <link rel="stylesheet" href="./styles.css" />
+          </head>
+          <body>
+            <main style="font-family:sans-serif;text-align:center;padding:48px 20px;">
+              <h1>Hola mundo 🚀</h1>
+              <p>Mi primera app Android.</p>
+            </main>
+            <script src="./app.js"></script>
+          </body>
+          </html>
+          EOF
+
+      - name: Crear src/styles.css (placeholder)
+        run: echo "body { background:#fff; color:#000; margin:0; }" > src/styles.css
+
+      - name: Crear src/app.js (placeholder)
+        run: echo "console.log('Mi App iniciada');" > src/app.js
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Compilar assets web
+        run: npm run build
+
+      - name: Añadir plataforma Android
+        run: npx cap add android
+
+      - name: Sincronizar Capacitor
+        run: npx cap sync android
+
+      - name: Compilar APK debug
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Subir APK como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mi-app-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 90
+          if-no-files-found: error
