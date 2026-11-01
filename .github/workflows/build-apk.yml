@@ -25,12 +25,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
+      - name: Aceptar licencias del Android SDK (preinstalado en ubuntu-latest)
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+          echo "SDK licencias aceptadas"
+          sdkmanager --list_installed | grep -E "platforms|build-tools" || true
 
       - name: Crear package.json
         run: |
@@ -66,7 +65,7 @@ jobs:
           export default config;
           EOF
 
-      - name: Crear carpeta src y scripts
+      - name: Crear carpetas src y scripts
         run: mkdir -p src scripts
 
       - name: Crear scripts/copy-assets.js
@@ -110,7 +109,7 @@ jobs:
       - name: Crear src/app.js (placeholder)
         run: echo "console.log('Mi App iniciada');" > src/app.js
 
-      - name: Instalar dependencias
+      - name: Instalar dependencias npm
         run: npm install
 
       - name: Compilar assets web
@@ -122,11 +121,11 @@ jobs:
       - name: Sincronizar Capacitor
         run: npx cap sync android
 
-      - name: Compilar APK debug
+      - name: Compilar APK debug con Gradle
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Subir APK como artifact
+      - name: Subir APK como artifact descargable
         uses: actions/upload-artifact@v4
         with:
           name: mi-app-debug-apk
