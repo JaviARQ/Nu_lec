@@ -30,12 +30,67 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
           echo "SDK licencias aceptadas"
 
+      - name: Preparar keystore de debug estable
+        run: |
+          mkdir -p $HOME/.android
+          cat > /tmp/keystore.b64 <<'EOF'
+          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
+          EOF
+          base64 -d /tmp/keystore.b64 > $HOME/.android/debug.keystore
+          echo "Keystore listo: $(wc -c < $HOME/.android/debug.keystore) bytes"
+
       - name: Crear package.json
         run: |
           cat > package.json <<'EOF'
           {
             "name": "lector-epub",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "private": true,
             "scripts": {
               "build": "node scripts/copy-assets.js",
@@ -71,26 +126,32 @@ jobs:
       - name: Crear scripts/copy-assets.js
         run: |
           cat > scripts/copy-assets.js <<'EOF'
-          const fs = require('fs');
-          const path = require('path');
-          const SRC = path.join(__dirname, '..', 'src');
-          const DST = path.join(__dirname, '..', 'www');
+          var fs = require('fs');
+          var path = require('path');
+          var ROOT = path.join(__dirname, '..');
+          var SRC = path.join(ROOT, 'src');
+          var DST = path.join(ROOT, 'www');
           if (!fs.existsSync(DST)) fs.mkdirSync(DST, { recursive: true });
-          // Copiar src/ -> www/
-          ['index.html', 'styles.css', 'app.js'].forEach(f => {
+          ['index.html', 'styles.css', 'app.js'].forEach(function (f) {
             fs.copyFileSync(path.join(SRC, f), path.join(DST, f));
           });
-          // Copiar epub.js desde node_modules a www/lib/
-          const libDst = path.join(DST, 'lib');
+          var libDst = path.join(DST, 'lib');
           if (!fs.existsSync(libDst)) fs.mkdirSync(libDst, { recursive: true });
-          const epubjsSrc = path.join(__dirname, '..', 'node_modules', 'epubjs', 'dist', 'epub.min.js');
-          if (fs.existsSync(epubjsSrc)) {
-            fs.copyFileSync(epubjsSrc, path.join(libDst, 'epub.min.js'));
-            console.log('epub.min.js copiado.');
-          } else {
-            console.error('No se encontro epub.min.js en', epubjsSrc);
-            process.exit(1);
-          }
+          var libs = [
+            ['jszip', 'dist/jszip.min.js', 'jszip.min.js'],
+            ['epubjs', 'dist/epub.min.js', 'epub.min.js']
+          ];
+          libs.forEach(function (spec) {
+            var src = path.join(ROOT, 'node_modules', spec[0], spec[1]);
+            var dst = path.join(libDst, spec[2]);
+            if (fs.existsSync(src)) {
+              fs.copyFileSync(src, dst);
+              console.log('Copiado: ' + spec[2]);
+            } else {
+              console.error('FALTA: ' + src);
+              process.exit(1);
+            }
+          });
           console.log('Build web completo.');
           EOF
 
@@ -103,48 +164,48 @@ jobs:
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
             <meta name="theme-color" content="#ffffff" />
-            <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; img-src 'self' blob: data:;" />
             <title>Lector EPUB</title>
             <link rel="stylesheet" href="./styles.css" />
           </head>
           <body>
             <header class="topbar" id="topbar">
-              <button class="icon-btn" id="back-btn" aria-label="Volver">‹</button>
+              <button class="icon-btn" id="back-btn" aria-label="Volver">&#8249;</button>
               <h1 class="title" id="title">Lector</h1>
-              <button class="icon-btn" id="menu-btn" aria-label="Menú">⋯</button>
+              <button class="icon-btn" id="menu-btn" aria-label="Menú">&#8943;</button>
             </header>
 
             <main class="empty" id="empty">
               <div class="empty-icon">📖</div>
               <h2>Lector EPUB</h2>
               <p>Abre un archivo .epub para empezar a leer.</p>
-              <button class="primary-btn" id="open-btn">Abrir EPUB</button>
-              <button class="ghost-btn" id="import-btn">Importar progreso</button>
-              <p class="hint">Tu posición se guarda automáticamente en este dispositivo. Usa "Exportar progreso" para sincronizar con otro dispositivo.</p>
+              <label class="primary-btn" for="file-input">Abrir EPUB</label>
+              <label class="ghost-btn" for="json-input">Importar progreso</label>
+              <p class="hint">Tu posición se guarda automáticamente en este dispositivo. Para sincronizar entre dispositivos: menú &#8943; → "Exportar progreso" y "Importar progreso".</p>
             </main>
 
             <main class="reader" id="reader" hidden>
               <div id="viewer"></div>
               <footer class="bottombar" id="bottombar">
-                <button class="nav-btn" id="prev-btn" aria-label="Anterior">‹</button>
+                <button class="nav-btn" id="prev-btn" aria-label="Anterior">&#8249;</button>
                 <div class="progress-info">
                   <span id="progress-text">0%</span>
                 </div>
-                <button class="nav-btn" id="next-btn" aria-label="Siguiente">›</button>
+                <button class="nav-btn" id="next-btn" aria-label="Siguiente">&#8250;</button>
               </footer>
             </main>
 
             <div class="overlay" id="overlay" hidden></div>
             <aside class="sheet" id="sheet" hidden>
-              <button class="sheet-item" id="sheet-open">Abrir otro EPUB</button>
+              <label class="sheet-item" for="file-input">Abrir otro EPUB</label>
               <button class="sheet-item" id="sheet-export">Exportar progreso</button>
-              <button class="sheet-item" id="sheet-import">Importar progreso</button>
+              <label class="sheet-item" for="json-input">Importar progreso</label>
               <button class="sheet-item sheet-cancel" id="sheet-cancel">Cancelar</button>
             </aside>
 
-            <input type="file" id="file-input" accept=".epub,application/epub+zip" hidden />
-            <input type="file" id="json-input" accept=".json,application/json" hidden />
+            <input type="file" id="file-input" accept=".epub,application/epub+zip" class="visually-hidden" />
+            <input type="file" id="json-input" accept=".json,application/json" class="visually-hidden" />
 
+            <script src="./lib/jszip.min.js"></script>
             <script src="./lib/epub.min.js"></script>
             <script src="./app.js"></script>
           </body>
@@ -167,15 +228,23 @@ jobs:
             height: 100vh; height: 100dvh;
             overflow: hidden;
           }
+          .visually-hidden {
+            position: absolute !important;
+            width: 1px; height: 1px;
+            margin: -1px; padding: 0; border: 0;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            clip-path: inset(50%);
+            white-space: nowrap;
+          }
           .topbar {
             position: fixed; top: 0; left: 0; right: 0;
             height: 56px; padding-top: env(safe-area-inset-top, 0);
             display: flex; align-items: center; justify-content: space-between;
             padding-left: 8px; padding-right: 8px;
             background: #fff; border-bottom: 1px solid #f2f2f2;
-            z-index: 10; transition: transform 0.25s ease;
+            z-index: 10;
           }
-          .topbar.hidden { transform: translateY(-100%); }
           .icon-btn {
             width: 40px; height: 40px;
             border: none; background: transparent;
@@ -201,18 +270,24 @@ jobs:
           .empty h2 { margin: 0 0 8px; font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
           .empty p { margin: 0 0 24px; color: #8a8a8e; font-size: 15px; max-width: 320px; }
           .primary-btn {
+            display: block;
             padding: 14px 32px; background: #000; color: #fff;
             border: none; border-radius: 14px;
             font-size: 17px; font-weight: 600;
             cursor: pointer; margin-bottom: 12px;
             width: 100%; max-width: 320px;
+            text-align: center;
+            -webkit-user-select: none; user-select: none;
           }
           .primary-btn:active { opacity: 0.7; }
           .ghost-btn {
+            display: block;
             padding: 12px 24px; background: transparent;
             color: #007aff; border: none;
             font-size: 15px; font-weight: 500;
             cursor: pointer; margin-bottom: 32px;
+            text-align: center;
+            -webkit-user-select: none; user-select: none;
           }
           .ghost-btn:active { opacity: 0.5; }
           .hint {
@@ -234,9 +309,8 @@ jobs:
             background: #fff; border-top: 1px solid #f2f2f2;
             display: flex; align-items: center; justify-content: space-between;
             padding-left: 8px; padding-right: 8px;
-            z-index: 10; transition: transform 0.25s ease;
+            z-index: 10;
           }
-          .bottombar.hidden { transform: translateY(100%); }
           .nav-btn {
             width: 44px; height: 44px;
             border: none; background: transparent;
@@ -254,22 +328,19 @@ jobs:
           .overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.4); z-index: 100;
-            opacity: 1; transition: opacity 0.2s ease;
           }
-          .overlay.hidden { opacity: 0; pointer-events: none; }
           .sheet {
             position: fixed; bottom: 0; left: 0; right: 0;
             background: #f2f2f2; border-radius: 16px 16px 0 0;
             padding: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0));
-            z-index: 101; transform: translateY(0);
-            transition: transform 0.25s ease;
+            z-index: 101;
           }
-          .sheet.hidden { transform: translateY(100%); pointer-events: none; }
           .sheet-item {
             display: block; width: 100%; padding: 16px;
             background: #fff; border: none; border-radius: 10px;
             text-align: center; font-size: 17px; color: #007aff;
             cursor: pointer; margin-bottom: 8px; font-family: inherit;
+            -webkit-user-select: none; user-select: none;
           }
           .sheet-item:active { background: #f0f0f0; }
           .sheet-cancel { font-weight: 600; margin-bottom: 0; }
@@ -292,193 +363,204 @@ jobs:
       - name: Crear src/app.js
         run: |
           cat > src/app.js <<'EOF'
-          let currentBook = null;
-          let currentRendition = null;
-          let currentFileName = null;
-          let barsVisible = true;
+          (function () {
+            'use strict';
 
-          const emptyState = document.getElementById('empty');
-          const readerView = document.getElementById('reader');
-          const titleEl = document.getElementById('title');
-          const progressEl = document.getElementById('progress-text');
-          const viewerEl = document.getElementById('viewer');
-          const topbar = document.getElementById('topbar');
-          const bottombar = document.getElementById('bottombar');
-          const fileInput = document.getElementById('file-input');
-          const jsonInput = document.getElementById('json-input');
-          const overlay = document.getElementById('overlay');
-          const sheet = document.getElementById('sheet');
+            var currentBook = null;
+            var currentRendition = null;
+            var currentFileName = null;
+            var touchStartX = null;
 
-          document.getElementById('open-btn').addEventListener('click', () => fileInput.click());
-          document.getElementById('import-btn').addEventListener('click', () => jsonInput.click());
-          document.getElementById('back-btn').addEventListener('click', closeBook);
-          document.getElementById('menu-btn').addEventListener('click', openSheet);
-          document.getElementById('prev-btn').addEventListener('click', () => currentRendition && currentRendition.prev());
-          document.getElementById('next-btn').addEventListener('click', () => currentRendition && currentRendition.next());
+            var emptyState = document.getElementById('empty');
+            var readerView = document.getElementById('reader');
+            var titleEl = document.getElementById('title');
+            var progressEl = document.getElementById('progress-text');
+            var viewerEl = document.getElementById('viewer');
+            var topbar = document.getElementById('topbar');
+            var bottombar = document.getElementById('bottombar');
+            var fileInput = document.getElementById('file-input');
+            var jsonInput = document.getElementById('json-input');
+            var overlay = document.getElementById('overlay');
+            var sheet = document.getElementById('sheet');
 
-          document.getElementById('sheet-open').addEventListener('click', () => { closeSheet(); fileInput.click(); });
-          document.getElementById('sheet-export').addEventListener('click', () => { closeSheet(); exportProgress(); });
-          document.getElementById('sheet-import').addEventListener('click', () => { closeSheet(); jsonInput.click(); });
-          document.getElementById('sheet-cancel').addEventListener('click', closeSheet);
-          overlay.addEventListener('click', closeSheet);
+            // Abrir/Importar se hacen con <label for="..."> (mas fiable en WebView).
+            document.getElementById('back-btn').addEventListener('click', closeBook);
+            document.getElementById('menu-btn').addEventListener('click', openSheet);
+            document.getElementById('prev-btn').addEventListener('click', function () {
+              if (currentRendition) currentRendition.prev();
+            });
+            document.getElementById('next-btn').addEventListener('click', function () {
+              if (currentRendition) currentRendition.next();
+            });
 
-          fileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            currentFileName = file.name;
-            const arrayBuffer = await file.arrayBuffer();
-            openBook(arrayBuffer, file.name);
-            e.target.value = '';
-          });
+            document.getElementById('sheet-open').addEventListener('click', closeSheet);
+            document.getElementById('sheet-import').addEventListener('click', closeSheet);
+            document.getElementById('sheet-export').addEventListener('click', function () {
+              closeSheet();
+              exportProgress();
+            });
+            document.getElementById('sheet-cancel').addEventListener('click', closeSheet);
+            overlay.addEventListener('click', closeSheet);
 
-          async function openBook(arrayBuffer, fileName) {
-            if (currentRendition) { try { currentRendition.destroy(); } catch(err) {} }
-            if (currentBook) { try { currentBook.destroy(); } catch(err) {} }
-            viewerEl.innerHTML = '';
+            fileInput.addEventListener('change', function (e) {
+              var file = e.target.files[0];
+              if (!file) return;
+              currentFileName = file.name;
+              var reader = new FileReader();
+              reader.onload = function () {
+                openBook(reader.result, file.name);
+              };
+              reader.readAsArrayBuffer(file);
+              e.target.value = '';
+            });
 
-            emptyState.hidden = true;
-            readerView.hidden = false;
-            titleEl.textContent = fileName.replace(/\.epub$/i, '');
+            function openBook(arrayBuffer, fileName) {
+              if (currentRendition) { try { currentRendition.destroy(); } catch (err) {} }
+              if (currentBook) { try { currentBook.destroy(); } catch (err) {} }
+              viewerEl.innerHTML = '';
 
-            try {
-              currentBook = ePub(arrayBuffer);
-              currentRendition = currentBook.renderTo(viewerEl, {
-                width: '100%',
-                height: '100%',
-                spread: 'none',
-                flow: 'paginated'
-              });
-
-              const savedCfi = localStorage.getItem('book:' + fileName + ':cfi');
-              await currentRendition.display(savedCfi || undefined);
-
-              currentBook.loaded.metadata.then(meta => {
-                if (meta && meta.title) titleEl.textContent = meta.title;
-              }).catch(() => {});
-
-              currentBook.ready.then(() => {
-                return currentBook.locations.generate(1200);
-              }).then(() => {
-                const cfi = localStorage.getItem('book:' + fileName + ':cfi');
-                updateProgressFromCfi(cfi);
-              }).catch(() => {});
-
-              currentRendition.on('relocated', (location) => {
-                if (!location || !location.start) return;
-                const cfi = location.start.cfi;
-                localStorage.setItem('book:' + fileName + ':cfi', cfi);
-                updateProgressFromCfi(cfi);
-              });
-
-              currentRendition.on('click', (e) => {
-                const rect = viewerEl.getBoundingClientRect();
-                const x = (e.clientX || 0) - rect.left;
-                const w = rect.width;
-                if (x < w * 0.3) {
-                  currentRendition.prev();
-                } else if (x > w * 0.7) {
-                  currentRendition.next();
-                } else {
-                  barsVisible = !barsVisible;
-                  topbar.classList.toggle('hidden', !barsVisible);
-                  bottombar.classList.toggle('hidden', !barsVisible);
-                }
-              });
-
-            } catch (err) {
-              alert('Error al abrir el EPUB: ' + err.message);
-              closeBook();
-            }
-          }
-
-          function updateProgressFromCfi(cfi) {
-            if (!cfi || !currentBook || !currentBook.locations.length()) {
-              progressEl.textContent = '0%';
-              return;
-            }
-            try {
-              const pct = currentBook.locations.percentageFromCfi(cfi);
-              progressEl.textContent = Math.round(pct * 100) + '%';
-              localStorage.setItem('book:' + currentFileName + ':progress', String(pct));
-            } catch(err) {
+              emptyState.hidden = true;
+              readerView.hidden = false;
+              titleEl.textContent = fileName.replace(/\.epub$/i, '');
               progressEl.textContent = '...';
+
+              try {
+                currentBook = ePub(arrayBuffer);
+                currentRendition = currentBook.renderTo(viewerEl, {
+                  width: '100%',
+                  height: '100%',
+                  spread: 'none',
+                  flow: 'paginated'
+                });
+
+                var savedCfi = localStorage.getItem('book:' + fileName + ':cfi');
+
+                currentRendition.display(savedCfi || undefined).then(function () {
+                  return currentBook.ready.then(function () {
+                    return currentBook.locations.generate(1200);
+                  });
+                }).then(function () {
+                  updateProgressFromCfi(localStorage.getItem('book:' + fileName + ':cfi'));
+                }).catch(function () {});
+
+                currentBook.loaded.metadata.then(function (meta) {
+                  if (meta && meta.title) titleEl.textContent = meta.title;
+                }).catch(function () {});
+
+                currentRendition.on('relocated', function (location) {
+                  if (!location || !location.start) return;
+                  var cfi = location.start.cfi;
+                  localStorage.setItem('book:' + fileName + ':cfi', cfi);
+                  updateProgressFromCfi(cfi);
+                });
+
+                // Navegacion por gestos: deslizar horizontal
+                viewerEl.addEventListener('touchstart', function (e) {
+                  touchStartX = e.changedTouches[0].clientX;
+                }, { passive: true });
+                viewerEl.addEventListener('touchend', function (e) {
+                  if (touchStartX === null) return;
+                  var dx = e.changedTouches[0].clientX - touchStartX;
+                  touchStartX = null;
+                  if (Math.abs(dx) < 50) return;
+                  if (dx < 0) { if (currentRendition) currentRendition.next(); }
+                  else { if (currentRendition) currentRendition.prev(); }
+                }, { passive: true });
+
+              } catch (err) {
+                alert('Error al abrir el EPUB: ' + err.message);
+                closeBook();
+              }
             }
-          }
 
-          function closeBook() {
-            if (currentRendition) { try { currentRendition.destroy(); } catch(err) {} }
-            if (currentBook) { try { currentBook.destroy(); } catch(err) {} }
-            currentBook = null;
-            currentRendition = null;
-            currentFileName = null;
-            viewerEl.innerHTML = '';
-            emptyState.hidden = false;
-            readerView.hidden = true;
-            topbar.classList.remove('hidden');
-            bottombar.classList.remove('hidden');
-            barsVisible = true;
-          }
-
-          function exportProgress() {
-            if (!currentFileName) {
-              alert('Abre un EPUB primero.');
-              return;
-            }
-            const cfi = localStorage.getItem('book:' + currentFileName + ':cfi') || '';
-            const progress = parseFloat(localStorage.getItem('book:' + currentFileName + ':progress') || '0');
-            const data = {
-              version: 1,
-              bookName: currentFileName,
-              cfi: cfi,
-              progress: progress,
-              updatedAt: new Date().toISOString()
-            };
-            const json = JSON.stringify(data, null, 2);
-            const blob = new Blob([json], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = currentFileName.replace(/\.epub$/i, '.json');
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-          }
-
-          jsonInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            try {
-              const text = await file.text();
-              const data = JSON.parse(text);
-              if (!data.bookName || !data.cfi) {
-                alert('Archivo no valido. Debe contener bookName y cfi.');
+            function updateProgressFromCfi(cfi) {
+              if (!cfi || !currentBook || !currentBook.locations.length()) {
+                progressEl.textContent = '0%';
                 return;
               }
-              localStorage.setItem('book:' + data.bookName + ':cfi', data.cfi);
-              if (typeof data.progress === 'number') {
-                localStorage.setItem('book:' + data.bookName + ':progress', String(data.progress));
+              try {
+                var pct = currentBook.locations.percentageFromCfi(cfi);
+                progressEl.textContent = Math.round(pct * 100) + '%';
+                localStorage.setItem('book:' + currentFileName + ':progress', String(pct));
+              } catch (err) {
+                progressEl.textContent = '...';
               }
-              if (currentFileName === data.bookName && currentRendition) {
-                currentRendition.display(data.cfi);
-                alert('Progreso importado y aplicado a "' + data.bookName + '".');
-              } else {
-                alert('Progreso importado para "' + data.bookName + '".\nAbrelo para continuar desde ahi.');
-              }
-            } catch (err) {
-              alert('Error al leer el JSON: ' + err.message);
             }
-            e.target.value = '';
-          });
 
-          function openSheet() {
-            overlay.hidden = false;
-            sheet.hidden = false;
-          }
-          function closeSheet() {
-            overlay.hidden = true;
-            sheet.hidden = true;
-          }
+            function closeBook() {
+              if (currentRendition) { try { currentRendition.destroy(); } catch (err) {} }
+              if (currentBook) { try { currentBook.destroy(); } catch (err) {} }
+              currentBook = null;
+              currentRendition = null;
+              currentFileName = null;
+              viewerEl.innerHTML = '';
+              emptyState.hidden = false;
+              readerView.hidden = true;
+            }
+
+            function exportProgress() {
+              if (!currentFileName) {
+                alert('Abre un EPUB primero.');
+                return;
+              }
+              var cfi = localStorage.getItem('book:' + currentFileName + ':cfi') || '';
+              var progress = parseFloat(localStorage.getItem('book:' + currentFileName + ':progress') || '0');
+              var data = {
+                version: 1,
+                bookName: currentFileName,
+                cfi: cfi,
+                progress: progress,
+                updatedAt: new Date().toISOString()
+              };
+              var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+              var url = URL.createObjectURL(blob);
+              var a = document.createElement('a');
+              a.href = url;
+              a.download = currentFileName.replace(/\.epub$/i, '.json');
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+            }
+
+            jsonInput.addEventListener('change', function (e) {
+              var file = e.target.files[0];
+              if (!file) return;
+              var reader = new FileReader();
+              reader.onload = function () {
+                try {
+                  var data = JSON.parse(reader.result);
+                  if (!data.bookName || !data.cfi) {
+                    alert('Archivo no valido. Debe contener bookName y cfi.');
+                    return;
+                  }
+                  localStorage.setItem('book:' + data.bookName + ':cfi', data.cfi);
+                  if (typeof data.progress === 'number') {
+                    localStorage.setItem('book:' + data.bookName + ':progress', String(data.progress));
+                  }
+                  if (currentFileName === data.bookName && currentRendition) {
+                    currentRendition.display(data.cfi);
+                    alert('Progreso aplicado a "' + data.bookName + '".');
+                  } else {
+                    alert('Progreso importado para "' + data.bookName + '". Abrelo para continuar desde ahi.');
+                  }
+                } catch (err) {
+                  alert('Error al leer el JSON: ' + err.message);
+                }
+              };
+              reader.readAsText(file);
+              e.target.value = '';
+            });
+
+            function openSheet() {
+              overlay.hidden = false;
+              sheet.hidden = false;
+            }
+            function closeSheet() {
+              overlay.hidden = true;
+              sheet.hidden = true;
+            }
+          })();
           EOF
 
       - name: Instalar dependencias npm
