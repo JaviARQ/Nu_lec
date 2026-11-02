@@ -25,7 +25,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Aceptar licencias del Android SDK (preinstalado en ubuntu-latest)
+      - name: Aceptar licencias del Android SDK (preinstalado)
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
           echo "SDK licencias aceptadas"
@@ -34,7 +34,7 @@ jobs:
         run: |
           cat > package.json <<'EOF'
           {
-            "name": "mi-app",
+            "name": "lector-epub",
             "version": "1.0.0",
             "private": true,
             "scripts": {
@@ -43,7 +43,8 @@ jobs:
             },
             "dependencies": {
               "@capacitor/android": "^6.1.2",
-              "@capacitor/core": "^6.1.2"
+              "@capacitor/core": "^6.1.2",
+              "epubjs": "^0.3.93"
             },
             "devDependencies": {
               "@capacitor/cli": "^6.1.2",
@@ -57,8 +58,8 @@ jobs:
           cat > capacitor.config.ts <<'EOF'
           import type { CapacitorConfig } from '@capacitor/cli';
           const config: CapacitorConfig = {
-            appId: 'com.ejemplo.miapp',
-            appName: 'Mi App',
+            appId: 'com.lector.epub',
+            appName: 'Lector EPUB',
             webDir: 'www'
           };
           export default config;
@@ -75,38 +76,410 @@ jobs:
           const SRC = path.join(__dirname, '..', 'src');
           const DST = path.join(__dirname, '..', 'www');
           if (!fs.existsSync(DST)) fs.mkdirSync(DST, { recursive: true });
+          // Copiar src/ -> www/
           ['index.html', 'styles.css', 'app.js'].forEach(f => {
             fs.copyFileSync(path.join(SRC, f), path.join(DST, f));
           });
+          // Copiar epub.js desde node_modules a www/lib/
+          const libDst = path.join(DST, 'lib');
+          if (!fs.existsSync(libDst)) fs.mkdirSync(libDst, { recursive: true });
+          const epubjsSrc = path.join(__dirname, '..', 'node_modules', 'epubjs', 'dist', 'epub.min.js');
+          if (fs.existsSync(epubjsSrc)) {
+            fs.copyFileSync(epubjsSrc, path.join(libDst, 'epub.min.js'));
+            console.log('epub.min.js copiado.');
+          } else {
+            console.error('No se encontro epub.min.js en', epubjsSrc);
+            process.exit(1);
+          }
           console.log('Build web completo.');
           EOF
 
-      - name: Crear src/index.html (placeholder)
+      - name: Crear src/index.html
         run: |
           cat > src/index.html <<'EOF'
           <!DOCTYPE html>
           <html lang="es">
           <head>
             <meta charset="UTF-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-            <title>Mi App</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+            <meta name="theme-color" content="#ffffff" />
+            <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; img-src 'self' blob: data:;" />
+            <title>Lector EPUB</title>
             <link rel="stylesheet" href="./styles.css" />
           </head>
           <body>
-            <main style="font-family:sans-serif;text-align:center;padding:48px 20px;">
-              <h1>Hola mundo 🚀</h1>
-              <p>Mi primera app Android.</p>
+            <header class="topbar" id="topbar">
+              <button class="icon-btn" id="back-btn" aria-label="Volver">‹</button>
+              <h1 class="title" id="title">Lector</h1>
+              <button class="icon-btn" id="menu-btn" aria-label="Menú">⋯</button>
+            </header>
+
+            <main class="empty" id="empty">
+              <div class="empty-icon">📖</div>
+              <h2>Lector EPUB</h2>
+              <p>Abre un archivo .epub para empezar a leer.</p>
+              <button class="primary-btn" id="open-btn">Abrir EPUB</button>
+              <button class="ghost-btn" id="import-btn">Importar progreso</button>
+              <p class="hint">Tu posición se guarda automáticamente en este dispositivo. Usa "Exportar progreso" para sincronizar con otro dispositivo.</p>
             </main>
+
+            <main class="reader" id="reader" hidden>
+              <div id="viewer"></div>
+              <footer class="bottombar" id="bottombar">
+                <button class="nav-btn" id="prev-btn" aria-label="Anterior">‹</button>
+                <div class="progress-info">
+                  <span id="progress-text">0%</span>
+                </div>
+                <button class="nav-btn" id="next-btn" aria-label="Siguiente">›</button>
+              </footer>
+            </main>
+
+            <div class="overlay" id="overlay" hidden></div>
+            <aside class="sheet" id="sheet" hidden>
+              <button class="sheet-item" id="sheet-open">Abrir otro EPUB</button>
+              <button class="sheet-item" id="sheet-export">Exportar progreso</button>
+              <button class="sheet-item" id="sheet-import">Importar progreso</button>
+              <button class="sheet-item sheet-cancel" id="sheet-cancel">Cancelar</button>
+            </aside>
+
+            <input type="file" id="file-input" accept=".epub,application/epub+zip" hidden />
+            <input type="file" id="json-input" accept=".json,application/json" hidden />
+
+            <script src="./lib/epub.min.js"></script>
             <script src="./app.js"></script>
           </body>
           </html>
           EOF
 
-      - name: Crear src/styles.css (placeholder)
-        run: echo "body { background:#fff; color:#000; margin:0; }" > src/styles.css
+      - name: Crear src/styles.css
+        run: |
+          cat > src/styles.css <<'EOF'
+          * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+          }
+          html, body {
+            margin: 0; padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+            background: #fff; color: #000;
+            -webkit-font-smoothing: antialiased;
+            font-size: 17px; line-height: 1.4;
+            height: 100vh; height: 100dvh;
+            overflow: hidden;
+          }
+          .topbar {
+            position: fixed; top: 0; left: 0; right: 0;
+            height: 56px; padding-top: env(safe-area-inset-top, 0);
+            display: flex; align-items: center; justify-content: space-between;
+            padding-left: 8px; padding-right: 8px;
+            background: #fff; border-bottom: 1px solid #f2f2f2;
+            z-index: 10; transition: transform 0.25s ease;
+          }
+          .topbar.hidden { transform: translateY(-100%); }
+          .icon-btn {
+            width: 40px; height: 40px;
+            border: none; background: transparent;
+            font-size: 28px; color: #000;
+            cursor: pointer; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            line-height: 1; font-weight: 300;
+          }
+          .icon-btn:active { background: #f2f2f2; }
+          .title {
+            flex: 1; font-size: 17px; font-weight: 600;
+            text-align: center; margin: 0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            letter-spacing: -0.2px;
+          }
+          .empty {
+            height: 100vh; height: 100dvh;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding: 32px 24px; text-align: center;
+          }
+          .empty-icon { font-size: 64px; margin-bottom: 16px; }
+          .empty h2 { margin: 0 0 8px; font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+          .empty p { margin: 0 0 24px; color: #8a8a8e; font-size: 15px; max-width: 320px; }
+          .primary-btn {
+            padding: 14px 32px; background: #000; color: #fff;
+            border: none; border-radius: 14px;
+            font-size: 17px; font-weight: 600;
+            cursor: pointer; margin-bottom: 12px;
+            width: 100%; max-width: 320px;
+          }
+          .primary-btn:active { opacity: 0.7; }
+          .ghost-btn {
+            padding: 12px 24px; background: transparent;
+            color: #007aff; border: none;
+            font-size: 15px; font-weight: 500;
+            cursor: pointer; margin-bottom: 32px;
+          }
+          .ghost-btn:active { opacity: 0.5; }
+          .hint {
+            font-size: 13px; color: #8a8a8e;
+            max-width: 320px !important; line-height: 1.5; margin-bottom: 0;
+          }
+          .reader {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            display: flex; flex-direction: column;
+          }
+          #viewer {
+            flex: 1; width: 100%;
+            margin-top: 56px; margin-bottom: 56px;
+            overflow: hidden;
+          }
+          .bottombar {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            height: 56px; padding-bottom: env(safe-area-inset-bottom, 0);
+            background: #fff; border-top: 1px solid #f2f2f2;
+            display: flex; align-items: center; justify-content: space-between;
+            padding-left: 8px; padding-right: 8px;
+            z-index: 10; transition: transform 0.25s ease;
+          }
+          .bottombar.hidden { transform: translateY(100%); }
+          .nav-btn {
+            width: 44px; height: 44px;
+            border: none; background: transparent;
+            font-size: 32px; color: #000;
+            cursor: pointer; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            line-height: 1; font-weight: 300;
+          }
+          .nav-btn:active { background: #f2f2f2; }
+          .progress-info {
+            flex: 1; display: flex; flex-direction: column;
+            align-items: center; font-size: 13px; color: #8a8a8e;
+          }
+          #progress-text { font-weight: 600; color: #000; font-size: 14px; }
+          .overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.4); z-index: 100;
+            opacity: 1; transition: opacity 0.2s ease;
+          }
+          .overlay.hidden { opacity: 0; pointer-events: none; }
+          .sheet {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: #f2f2f2; border-radius: 16px 16px 0 0;
+            padding: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0));
+            z-index: 101; transform: translateY(0);
+            transition: transform 0.25s ease;
+          }
+          .sheet.hidden { transform: translateY(100%); pointer-events: none; }
+          .sheet-item {
+            display: block; width: 100%; padding: 16px;
+            background: #fff; border: none; border-radius: 10px;
+            text-align: center; font-size: 17px; color: #007aff;
+            cursor: pointer; margin-bottom: 8px; font-family: inherit;
+          }
+          .sheet-item:active { background: #f0f0f0; }
+          .sheet-cancel { font-weight: 600; margin-bottom: 0; }
+          @media (prefers-color-scheme: dark) {
+            html, body { background: #000; color: #fff; }
+            .topbar, .bottombar { background: #000; border-color: #1c1c1e; }
+            .icon-btn, .nav-btn { color: #fff; }
+            .icon-btn:active, .nav-btn:active { background: #1c1c1e; }
+            .primary-btn { background: #fff; color: #000; }
+            .ghost-btn, .sheet-item { color: #0a84ff; }
+            .sheet { background: #1c1c1e; }
+            .sheet-item { background: #2c2c2e; color: #0a84ff; }
+            .sheet-item:active { background: #3a3a3c; }
+            .sheet-cancel { color: #0a84ff; }
+            #progress-text { color: #fff; }
+            .empty p, .hint { color: #8a8a8e; }
+          }
+          EOF
 
-      - name: Crear src/app.js (placeholder)
-        run: echo "console.log('Mi App iniciada');" > src/app.js
+      - name: Crear src/app.js
+        run: |
+          cat > src/app.js <<'EOF'
+          let currentBook = null;
+          let currentRendition = null;
+          let currentFileName = null;
+          let barsVisible = true;
+
+          const emptyState = document.getElementById('empty');
+          const readerView = document.getElementById('reader');
+          const titleEl = document.getElementById('title');
+          const progressEl = document.getElementById('progress-text');
+          const viewerEl = document.getElementById('viewer');
+          const topbar = document.getElementById('topbar');
+          const bottombar = document.getElementById('bottombar');
+          const fileInput = document.getElementById('file-input');
+          const jsonInput = document.getElementById('json-input');
+          const overlay = document.getElementById('overlay');
+          const sheet = document.getElementById('sheet');
+
+          document.getElementById('open-btn').addEventListener('click', () => fileInput.click());
+          document.getElementById('import-btn').addEventListener('click', () => jsonInput.click());
+          document.getElementById('back-btn').addEventListener('click', closeBook);
+          document.getElementById('menu-btn').addEventListener('click', openSheet);
+          document.getElementById('prev-btn').addEventListener('click', () => currentRendition && currentRendition.prev());
+          document.getElementById('next-btn').addEventListener('click', () => currentRendition && currentRendition.next());
+
+          document.getElementById('sheet-open').addEventListener('click', () => { closeSheet(); fileInput.click(); });
+          document.getElementById('sheet-export').addEventListener('click', () => { closeSheet(); exportProgress(); });
+          document.getElementById('sheet-import').addEventListener('click', () => { closeSheet(); jsonInput.click(); });
+          document.getElementById('sheet-cancel').addEventListener('click', closeSheet);
+          overlay.addEventListener('click', closeSheet);
+
+          fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            currentFileName = file.name;
+            const arrayBuffer = await file.arrayBuffer();
+            openBook(arrayBuffer, file.name);
+            e.target.value = '';
+          });
+
+          async function openBook(arrayBuffer, fileName) {
+            if (currentRendition) { try { currentRendition.destroy(); } catch(err) {} }
+            if (currentBook) { try { currentBook.destroy(); } catch(err) {} }
+            viewerEl.innerHTML = '';
+
+            emptyState.hidden = true;
+            readerView.hidden = false;
+            titleEl.textContent = fileName.replace(/\.epub$/i, '');
+
+            try {
+              currentBook = ePub(arrayBuffer);
+              currentRendition = currentBook.renderTo(viewerEl, {
+                width: '100%',
+                height: '100%',
+                spread: 'none',
+                flow: 'paginated'
+              });
+
+              const savedCfi = localStorage.getItem('book:' + fileName + ':cfi');
+              await currentRendition.display(savedCfi || undefined);
+
+              currentBook.loaded.metadata.then(meta => {
+                if (meta && meta.title) titleEl.textContent = meta.title;
+              }).catch(() => {});
+
+              currentBook.ready.then(() => {
+                return currentBook.locations.generate(1200);
+              }).then(() => {
+                const cfi = localStorage.getItem('book:' + fileName + ':cfi');
+                updateProgressFromCfi(cfi);
+              }).catch(() => {});
+
+              currentRendition.on('relocated', (location) => {
+                if (!location || !location.start) return;
+                const cfi = location.start.cfi;
+                localStorage.setItem('book:' + fileName + ':cfi', cfi);
+                updateProgressFromCfi(cfi);
+              });
+
+              currentRendition.on('click', (e) => {
+                const rect = viewerEl.getBoundingClientRect();
+                const x = (e.clientX || 0) - rect.left;
+                const w = rect.width;
+                if (x < w * 0.3) {
+                  currentRendition.prev();
+                } else if (x > w * 0.7) {
+                  currentRendition.next();
+                } else {
+                  barsVisible = !barsVisible;
+                  topbar.classList.toggle('hidden', !barsVisible);
+                  bottombar.classList.toggle('hidden', !barsVisible);
+                }
+              });
+
+            } catch (err) {
+              alert('Error al abrir el EPUB: ' + err.message);
+              closeBook();
+            }
+          }
+
+          function updateProgressFromCfi(cfi) {
+            if (!cfi || !currentBook || !currentBook.locations.length()) {
+              progressEl.textContent = '0%';
+              return;
+            }
+            try {
+              const pct = currentBook.locations.percentageFromCfi(cfi);
+              progressEl.textContent = Math.round(pct * 100) + '%';
+              localStorage.setItem('book:' + currentFileName + ':progress', String(pct));
+            } catch(err) {
+              progressEl.textContent = '...';
+            }
+          }
+
+          function closeBook() {
+            if (currentRendition) { try { currentRendition.destroy(); } catch(err) {} }
+            if (currentBook) { try { currentBook.destroy(); } catch(err) {} }
+            currentBook = null;
+            currentRendition = null;
+            currentFileName = null;
+            viewerEl.innerHTML = '';
+            emptyState.hidden = false;
+            readerView.hidden = true;
+            topbar.classList.remove('hidden');
+            bottombar.classList.remove('hidden');
+            barsVisible = true;
+          }
+
+          function exportProgress() {
+            if (!currentFileName) {
+              alert('Abre un EPUB primero.');
+              return;
+            }
+            const cfi = localStorage.getItem('book:' + currentFileName + ':cfi') || '';
+            const progress = parseFloat(localStorage.getItem('book:' + currentFileName + ':progress') || '0');
+            const data = {
+              version: 1,
+              bookName: currentFileName,
+              cfi: cfi,
+              progress: progress,
+              updatedAt: new Date().toISOString()
+            };
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = currentFileName.replace(/\.epub$/i, '.json');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }
+
+          jsonInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+              const text = await file.text();
+              const data = JSON.parse(text);
+              if (!data.bookName || !data.cfi) {
+                alert('Archivo no valido. Debe contener bookName y cfi.');
+                return;
+              }
+              localStorage.setItem('book:' + data.bookName + ':cfi', data.cfi);
+              if (typeof data.progress === 'number') {
+                localStorage.setItem('book:' + data.bookName + ':progress', String(data.progress));
+              }
+              if (currentFileName === data.bookName && currentRendition) {
+                currentRendition.display(data.cfi);
+                alert('Progreso importado y aplicado a "' + data.bookName + '".');
+              } else {
+                alert('Progreso importado para "' + data.bookName + '".\nAbrelo para continuar desde ahi.');
+              }
+            } catch (err) {
+              alert('Error al leer el JSON: ' + err.message);
+            }
+            e.target.value = '';
+          });
+
+          function openSheet() {
+            overlay.hidden = false;
+            sheet.hidden = false;
+          }
+          function closeSheet() {
+            overlay.hidden = true;
+            sheet.hidden = true;
+          }
+          EOF
 
       - name: Instalar dependencias npm
         run: npm install
@@ -127,7 +500,7 @@ jobs:
       - name: Subir APK como artifact descargable
         uses: actions/upload-artifact@v5
         with:
-          name: mi-app-debug-apk
+          name: lector-epub-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 90
           if-no-files-found: error
