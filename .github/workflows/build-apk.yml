@@ -121,10 +121,11 @@ jobs:
 
               // Readium Kotlin Toolkit 3.4.0
               // groupId en Maven Central: org.readium.kotlin-toolkit
+              // En 3.x el navegador EPUB (EpubNavigatorFactory/Fragment)
+              // va dentro de readium-navigator (NO existe readium-navigator-epub).
               implementation("org.readium.kotlin-toolkit:readium-shared:3.4.0")
               implementation("org.readium.kotlin-toolkit:readium-streamer:3.4.0")
               implementation("org.readium.kotlin-toolkit:readium-navigator:3.4.0")
-              implementation("org.readium.kotlin-toolkit:readium-navigator-epub:3.4.0")
           }
           EOF
 
