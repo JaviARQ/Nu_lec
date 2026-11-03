@@ -103,7 +103,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 4
+                  versionCode = 5
                   versionName = "1.0"
               }
 
@@ -158,7 +158,6 @@ jobs:
           mkdir -p app/src/main/java/com/lector/epub
           mkdir -p app/src/main/res/layout
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/xml
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -227,8 +226,11 @@ jobs:
           cat > app/src/main/java/com/lector/epub/MainActivity.kt <<'EOF'
           package com.lector.epub
 
+          import android.content.Intent
           import android.net.Uri
           import android.os.Bundle
+          import android.provider.DocumentsContract
+          import android.provider.DocumentsContract.Document
           import android.provider.OpenableColumns
           import android.view.View
           import android.widget.FrameLayout
@@ -238,7 +240,11 @@ jobs:
           import androidx.activity.result.contract.ActivityResultContracts
           import androidx.appcompat.app.AppCompatActivity
           import androidx.lifecycle.lifecycleScope
+          import kotlinx.coroutines.CoroutineScope
           import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.SupervisorJob
+          import kotlinx.coroutines.delay
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.withContext
           import org.json.JSONObject
@@ -252,27 +258,44 @@ jobs:
 
           /**
            * Actividad principal. Dos estados:
-           *   - HOME:   boton Abrir EPUB + boton Importar posicion (JSON).
-           *   - READER: boton Exportar posicion + boton Cerrar + el lector de Readium.
+           *   - HOME:   boton Elegir carpeta sidecars + boton Abrir EPUB.
+           *   - READER: boton Cerrar + el lector de Readium.
            *
-           * La posicion de lectura se guarda internamente con el mismo nombre que
-           * el EPUB. Exportar crea un archivo <nombre-del-libro>.json que se puede
-           * copiar a otro dispositivo y cargar con "Importar posicion".
+           * La posicion de lectura se guarda:
+           *   1) En SharedPreferences (instantaneo, interno, no accesible al usuario).
+           *   2) En un archivo <nombre-libro>.json dentro de la carpeta sidecars
+           *      que el usuario elige una sola vez (auto-export silencioso).
+           *
+           * Al abrir un EPUB, la app busca primero el sidecar .json y, si existe,
+           * abre directamente en esa posicion. Asi, copiando la carpeta sidecars
+           * a otro dispositivo, la posicion se recupera sola.
            */
           class MainActivity : AppCompatActivity() {
 
               private val app: LectorApp get() = application as LectorApp
+
+              // Scope que sobrevive al cierre de la actividad: para el flush final
+              // del sidecar cuando el usuario cierra el libro.
+              private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
               // Vistas (se crean por codigo, sin XML)
               private lateinit var homeView: LinearLayout
               private lateinit var readerView: LinearLayout
               private lateinit var navContainer: FrameLayout
               private lateinit var statusText: TextView
+              private lateinit var sidecarStatusText: TextView
 
               // Estado
               private var currentFile: File? = null
               private var currentBookName: String? = null
               private var navigator: EpubNavigatorFragment? = null
+
+              // Carpeta sidecar persistida (tree URI SAF). Null = no elegida.
+              private var sidecarTreeUri: Uri? = null
+
+              // Debounce del guardado sidecar (2s sin cambios antes de escribir).
+              private var sidecarJob: Job? = null
+              private var lastLocator: Locator? = null
 
               // Selector de EPUB
               private val openEpubLauncher = registerForActivityResult(
@@ -281,23 +304,30 @@ jobs:
                   if (uri != null) lifecycleScope.launch { openEpub(uri) }
               }
 
-              // Exportar JSON: pide al usuario donde guardarlo (SAF)
-              private val exportJsonLauncher = registerForActivityResult(
-                  ActivityResultContracts.CreateDocument("application/json")
+              // Selector de carpeta sidecar (una sola vez por dispositivo)
+              private val pickSidecarTreeLauncher = registerForActivityResult(
+                  ActivityResultContracts.OpenDocumentTree()
               ) { uri ->
-                  if (uri != null) lifecycleScope.launch { exportJson(uri) }
-              }
-
-              // Importar JSON
-              private val importJsonLauncher = registerForActivityResult(
-                  ActivityResultContracts.OpenDocument()
-              ) { uri ->
-                  if (uri != null) lifecycleScope.launch { importJson(uri) }
+                  if (uri != null) {
+                      contentResolver.takePersistableUriPermission(
+                          uri,
+                          Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                              Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                      )
+                      prefs().edit().putString("sidecar_tree_uri", uri.toString()).apply()
+                      sidecarTreeUri = uri
+                      updateSidecarStatus()
+                      Toast.makeText(this, "Carpeta sidecars guardada", Toast.LENGTH_SHORT).show()
+                  }
               }
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  sidecarTreeUri = prefs().getString("sidecar_tree_uri", null)?.let {
+                      runCatching { Uri.parse(it) }.getOrNull()
+                  }
                   buildUI()
+                  updateSidecarStatus()
               }
 
               private fun buildUI() {
@@ -318,9 +348,29 @@ jobs:
                   homeView.addView(TextView(this).apply {
                       text = "Motor: Readium 3.4"
                       textSize = 14f
-                      setPadding(0, 0, 0, 48)
+                      setPadding(0, 0, 0, 32)
                   })
-                  val btnOpen = android.widget.Button(this).apply {
+
+                  // Estado de la carpeta sidecar (muestra la ruta o un aviso)
+                  sidecarStatusText = TextView(this).apply {
+                      textSize = 13f
+                      setPadding(0, 0, 0, 16)
+                  }
+                  homeView.addView(sidecarStatusText)
+
+                  // Boton elegir / cambiar carpeta sidecars
+                  homeView.addView(android.widget.Button(this).apply {
+                      text = "Elegir carpeta sidecars"
+                      setOnClickListener { pickSidecarTreeLauncher.launch(null) }
+                  })
+
+                  // Separador visual
+                  homeView.addView(TextView(this).apply {
+                      setPadding(0, 24, 0, 0)
+                  })
+
+                  // Abrir EPUB
+                  homeView.addView(android.widget.Button(this).apply {
                       text = "Abrir EPUB"
                       setOnClickListener {
                           openEpubLauncher.launch(arrayOf(
@@ -328,15 +378,7 @@ jobs:
                               "application/octet-stream"
                           ))
                       }
-                  }
-                  val btnImport = android.widget.Button(this).apply {
-                      text = "Importar posicion (JSON)"
-                      setOnClickListener {
-                          importJsonLauncher.launch(arrayOf("application/json", "text/*"))
-                      }
-                  }
-                  homeView.addView(btnOpen)
-                  homeView.addView(btnImport)
+                  })
                   statusText = TextView(this).apply {
                       setPadding(0, 32, 0, 0)
                       textSize = 13f
@@ -352,13 +394,6 @@ jobs:
                       orientation = LinearLayout.HORIZONTAL
                       setPadding(32, 32, 32, 16)
                   }
-                  topBar.addView(android.widget.Button(this).apply {
-                      text = "Exportar posicion"
-                      setOnClickListener {
-                          val name = currentBookName?.substringBeforeLast('.') ?: "lector"
-                          exportJsonLauncher.launch("$name.json")
-                      }
-                  })
                   topBar.addView(android.widget.Button(this).apply {
                       text = "Cerrar"
                       setOnClickListener { closeBook() }
@@ -386,6 +421,17 @@ jobs:
                   setContentView(root)
               }
 
+              private fun updateSidecarStatus() {
+                  val tree = sidecarTreeUri
+                  sidecarStatusText.text = if (tree != null) {
+                      // Mostrar un resumen legible de la ruta SAF
+                      "Sidecars en: ${tree.lastPathSegment ?: tree}"
+                  } else {
+                      "Sin carpeta sidecars. Para sincronizar entre " +
+                          "dispositivos, elige una (solo se hace una vez)."
+                  }
+              }
+
               // ----- Abrir un EPUB desde un URI (SAF) -----
               private suspend fun openEpub(uri: Uri) {
                   statusText.text = "Abriendo..."
@@ -403,14 +449,14 @@ jobs:
                       currentBookName = displayName
 
                       // 1. File -> Asset (Readium detecta el formato solo).
-                      // OJO: en Readium 3.4 el tipo Try no permite encadenar
-                      // extensiones aqui; getOrNull() y failureOrNull() son
-                      // miembros directos y no necesitan import.
+                      // En Readium 3.4, getOrNull() y failureOrNull() son miembros
+                      // directos de Try (no necesitan import).
                       val assetResult = withContext(Dispatchers.IO) {
                           app.assetRetriever.retrieve(cached)
                       }
                       val asset = assetResult.getOrNull()
-                          ?: error("Readium no pudo leer el archivo: ${assetResult.failureOrNull()?.message ?: "formato no reconocido"}")
+                          ?: error("Readium no pudo leer el archivo: " +
+                              "${assetResult.failureOrNull()?.message ?: "formato no reconocido"}")
 
                       // 2. Asset -> Publication
                       val publicationResult = withContext(Dispatchers.IO) {
@@ -420,18 +466,19 @@ jobs:
                           )
                       }
                       val publication = publicationResult.getOrNull()
-                          ?: error("Readium no pudo abrir el EPUB: ${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
+                          ?: error("Readium no pudo abrir el EPUB: " +
+                              "${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
 
-                      // Buscar locator guardado (mismo nombre que el EPUB)
-                      val initialLocator = loadLocator(displayName)
+                      // Buscar posicion guardada:
+                      //   1) sidecar .json en la carpeta (si fue elegida) -> sincronizable
+                      //   2) si no, SharedPreferences interno -> solo local
+                      val initialLocator = loadSidecar(displayName) ?: loadLocator(displayName)
 
                       // Mostrar reader
                       homeView.visibility = View.GONE
                       readerView.visibility = View.VISIBLE
 
                       // Crear navigator y meterlo en el contenedor.
-                      // listener = null (valor por defecto): no interceptamos taps ni
-                      // enlaces externos, el navigator usa su comportamiento estandar.
                       val factory = EpubNavigatorFactory(publication = publication)
                       supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
                           initialLocator = initialLocator,
@@ -446,10 +493,18 @@ jobs:
 
                       navigator = frag
 
-                      // Escuchar cambios de posicion (Flow en v3) y guardar automaticamente
+                      // Escuchar cambios de posicion (Flow en v3):
+                      //  - SharedPrefs: guardado inmediato (no se pierde nada en crash).
+                      //  - Sidecar JSON: debounce de 2s (no escribir a disco en cada toque).
                       lifecycleScope.launch {
                           frag.currentLocator.collect { locator ->
+                              lastLocator = locator
                               saveLocator(displayName, locator)
+                              sidecarJob?.cancel()
+                              sidecarJob = appScope.launch {
+                                  delay(2000)
+                                  saveSidecar(displayName, locator)
+                              }
                           }
                       }
 
@@ -462,6 +517,15 @@ jobs:
               }
 
               private fun closeBook() {
+                  // Flush final del sidecar (si quedaba un debounce pendiente).
+                  sidecarJob?.cancel()
+                  val book = currentBookName
+                  val loc = lastLocator
+                  if (book != null && loc != null) {
+                      appScope.launch { saveSidecar(book, loc) }
+                  }
+                  lastLocator = null
+
                   navigator?.let {
                       try {
                           supportFragmentManager.beginTransaction().remove(it)
@@ -475,7 +539,7 @@ jobs:
                   homeView.visibility = View.VISIBLE
               }
 
-              // ----- Persistencia de la posicion (SharedPreferences) -----
+              // ----- Persistencia interna (SharedPreferences) -----
               // Clave: nombre del archivo EPUB. Valor: JSON del Locator.
               private fun prefs() =
                   getSharedPreferences("lector_positions", MODE_PRIVATE)
@@ -490,50 +554,81 @@ jobs:
                   prefs().edit().putString(bookName, json).apply()
               }
 
-              // ----- Exportar posicion a JSON sidecar -----
-              private suspend fun exportJson(uri: Uri) {
-                  try {
-                      val locator = navigator?.currentLocator?.value
-                          ?: error("No hay una posicion actual que exportar")
-                      val bookName = currentBookName ?: "lector.epub"
+              // ----- Sidecar JSON automatico (carpeta SAF elegida por el usuario) -----
 
-                      val json = JSONObject().apply {
-                          put("version", 1)
-                          put("bookName", bookName)
-                          put("locator", locator.toJSON())
-                          put("updatedAt",
-                              SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
-                      }.toString(2)
-
-                      withContext(Dispatchers.IO) {
-                          contentResolver.openOutputStream(uri)?.use { os ->
-                              os.write(json.toByteArray(Charsets.UTF_8))
-                          } ?: error("No se pudo escribir el archivo")
+              // Busca en la carpeta sidecars un archivo <nombre-libro>.json
+              // y devuelve su Uri, o null si no existe.
+              private suspend fun findSidecarUri(bookName: String): Uri? {
+                  val tree = sidecarTreeUri ?: return null
+                  val sidecarName = bookName.substringBeforeLast('.') + ".json"
+                  return withContext(Dispatchers.IO) {
+                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
+                      var found: Uri? = null
+                      contentResolver.query(
+                          DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId),
+                          arrayOf(
+                              Document.COLUMN_DOCUMENT_ID,
+                              Document.COLUMN_DISPLAY_NAME
+                          ),
+                          null, null, null
+                      )?.use { c ->
+                          val idIdx = c.getColumnIndexOrThrow(Document.COLUMN_DOCUMENT_ID)
+                          val nameIdx = c.getColumnIndexOrThrow(Document.COLUMN_DISPLAY_NAME)
+                          while (c.moveToNext()) {
+                              if (c.getString(nameIdx) == sidecarName) {
+                                  found = DocumentsContract.buildDocumentUriUsingTree(
+                                      tree, c.getString(idIdx)
+                                  )
+                                  break
+                              }
+                          }
                       }
-                      Toast.makeText(this, "Posicion exportada", Toast.LENGTH_SHORT).show()
-                  } catch (e: Throwable) {
-                      Toast.makeText(this, "Error exportando: ${e.message}", Toast.LENGTH_LONG).show()
+                      found
                   }
               }
 
-              // ----- Importar posicion desde JSON sidecar -----
-              private suspend fun importJson(uri: Uri) {
-                  try {
-                      val text = withContext(Dispatchers.IO) {
-                          contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                      } ?: error("No se pudo leer el JSON")
+              // Lee el sidecar y devuelve el Locator, o null si no existe / esta corrupto.
+              private suspend fun loadSidecar(bookName: String): Locator? {
+                  val uri = findSidecarUri(bookName) ?: return null
+                  return withContext(Dispatchers.IO) {
+                      val text = contentResolver.openInputStream(uri)?.use {
+                          it.readBytes().toString(Charsets.UTF_8)
+                      } ?: return@withContext null
+                      runCatching {
+                          Locator.fromJSON(JSONObject(text).getJSONObject("locator"))
+                      }.getOrNull()
+                  }
+              }
 
-                      val json = JSONObject(text)
-                      val bookName = json.getString("bookName")
-                      val locator = Locator.fromJSON(json.getJSONObject("locator"))
-                          ?: error("El JSON no contiene un Locator valido")
+              // Escribe (o sobrescribe) el sidecar. Crea el archivo si no existe.
+              private suspend fun saveSidecar(bookName: String, locator: Locator) {
+                  val tree = sidecarTreeUri ?: return
+                  val sidecarName = bookName.substringBeforeLast('.') + ".json"
+                  val json = JSONObject().apply {
+                      put("version", 1)
+                      put("bookName", bookName)
+                      put("locator", locator.toJSON())
+                      put("updatedAt",
+                          SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+                  }.toString(2)
 
-                      saveLocator(bookName, locator)
+                  withContext(Dispatchers.IO) {
+                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
+                      val treeDocUri = DocumentsContract.buildDocumentUriUsingTree(tree, treeDocId)
 
-                      statusText.text = "Posicion importada para: $bookName"
-                      Toast.makeText(this, "Importado: $bookName", Toast.LENGTH_LONG).show()
-                  } catch (e: Throwable) {
-                      Toast.makeText(this, "Error importando: ${e.message}", Toast.LENGTH_LONG).show()
+                      // Buscar si ya existe; si no, crearlo.
+                      var target = findSidecarUri(bookName)
+                      if (target == null) {
+                          target = DocumentsContract.createDocument(
+                              contentResolver, treeDocUri,
+                              "application/json", sidecarName
+                          ) ?: return@withContext
+                      }
+
+                      contentResolver.openOutputStream(target, "wt")?.use { os ->
+                          os.write(json.toByteArray(Charsets.UTF_8))
+                          os.flush()
+                      }
                   }
               }
 
