@@ -20,10 +20,10 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Gradle 8.7
+      - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: '9.3.1'
 
       - name: Aceptar licencias del Android SDK
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
@@ -58,9 +58,10 @@ jobs:
 
           # --- build.gradle.kts (root) ---
           cat > build.gradle.kts <<'EOF'
+          // AGP 9.1.x incluye Kotlin built-in: no hace falta declarar
+          // el plugin org.jetbrains.kotlin.android a nivel de proyecto.
           plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+              id("com.android.application") version "9.1.1" apply false
           }
           EOF
 
@@ -75,19 +76,19 @@ jobs:
           # --- app/build.gradle.kts ---
           mkdir -p app
           cat > app/build.gradle.kts <<'EOF'
+          // AGP 9.x trae Kotlin integrado: no declaramos el plugin kotlin.android.
           plugins {
               id("com.android.application")
-              id("org.jetbrains.kotlin.android")
           }
 
           android {
               namespace = "com.lector.epub"
-              compileSdk = 34
+              compileSdk = 35
 
               defaultConfig {
                   applicationId = "com.lector.epub"
                   minSdk = 24
-                  targetSdk = 34
+                  targetSdk = 35
                   versionCode = 3
                   versionName = "1.0"
               }
@@ -102,11 +103,16 @@ jobs:
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
               buildFeatures {
                   viewBinding = true
+              }
+          }
+
+          // En AGP 9.x, kotlinOptions{} dentro de android{} esta obsoleto.
+          // Se define a nivel top-level con kotlin { compilerOptions {} }.
+          kotlin {
+              compilerOptions {
+                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
               }
           }
 
