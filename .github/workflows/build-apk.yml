@@ -28,6 +28,13 @@ jobs:
       - name: Aceptar licencias del Android SDK
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
 
+      - name: Instalar SDK Platform 37 + build-tools
+        # Readium 3.4 exige compileSdk 37. El runner trae 35/36 pero no 37.
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platforms;android-37" \
+            "build-tools;37.0.0" > /dev/null || true
+
       # ============================================================
       # PROYECTO ANDROID (Kotlin) + READIUM 3.4.0
       # Todo el proyecto se genera aqui mismo con heredocs.
@@ -83,7 +90,7 @@ jobs:
 
           android {
               namespace = "com.lector.epub"
-              compileSdk = 35
+              compileSdk = 37
 
               defaultConfig {
                   applicationId = "com.lector.epub"
@@ -102,6 +109,8 @@ jobs:
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
+                  // Readium 3.4 exige "core library desugaring" habilitado.
+                  isCoreLibraryDesugaringEnabled = true
               }
               buildFeatures {
                   viewBinding = true
@@ -117,6 +126,9 @@ jobs:
           }
 
           dependencies {
+              // Core library desugaring (exigido por Readium 3.4).
+              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
               implementation("androidx.core:core-ktx:1.13.1")
               implementation("androidx.appcompat:appcompat:1.7.0")
               implementation("com.google.android.material:material:1.12.0")
