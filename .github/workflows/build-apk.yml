@@ -103,7 +103,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 3
+                  versionCode = 4
                   versionName = "1.0"
               }
 
@@ -403,18 +403,24 @@ jobs:
                       currentBookName = displayName
 
                       // 1. File -> Asset (Readium detecta el formato solo).
-                      val asset = withContext(Dispatchers.IO) {
+                      // OJO: en Readium 3.4 el tipo Try no permite encadenar
+                      // extensiones aqui; getOrNull() y failureOrNull() son
+                      // miembros directos y no necesitan import.
+                      val assetResult = withContext(Dispatchers.IO) {
                           app.assetRetriever.retrieve(cached)
-                              .getOrElse { error("Readium no pudo leer el archivo: ${it.message}") }
                       }
+                      val asset = assetResult.getOrNull()
+                          ?: error("Readium no pudo leer el archivo: ${assetResult.failureOrNull()?.message ?: "formato no reconocido"}")
 
                       // 2. Asset -> Publication
-                      val publication = withContext(Dispatchers.IO) {
+                      val publicationResult = withContext(Dispatchers.IO) {
                           app.publicationOpener.open(
                               asset = asset,
                               allowUserInteraction = true,
-                          ).getOrElse { error("Readium no pudo abrir el EPUB: ${it.message}") }
+                          )
                       }
+                      val publication = publicationResult.getOrNull()
+                          ?: error("Readium no pudo abrir el EPUB: ${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
 
                       // Buscar locator guardado (mismo nombre que el EPUB)
                       val initialLocator = loadLocator(displayName)
