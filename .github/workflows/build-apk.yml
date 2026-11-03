@@ -65,8 +65,15 @@ jobs:
 
           # --- build.gradle.kts (root) ---
           cat > build.gradle.kts <<'EOF'
-          // AGP 9.1.x incluye Kotlin built-in: no hace falta declarar
-          // el plugin org.jetbrains.kotlin.android a nivel de proyecto.
+          // Readium 3.4.0 se compilo con Kotlin 2.4.x. AGP 9.1 trae KGP 2.2.10 por
+          // defecto, que no entiende ese metadata. Se sobreescribe con buildscript
+          // classpath (mecanismo oficial de AGP 9.x para subir la version de KGP).
+          buildscript {
+              dependencies {
+                  classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
+              }
+          }
+
           plugins {
               id("com.android.application") version "9.1.1" apply false
           }
@@ -182,9 +189,10 @@ jobs:
           package com.lector.epub
 
           import android.app.Application
-          import org.readium.r2.shared.publication.PublicationOpener
           import org.readium.r2.shared.util.asset.AssetRetriever
           import org.readium.r2.shared.util.http.DefaultHttpClient
+          import org.readium.r2.streamer.PublicationOpener
+          import org.readium.r2.streamer.parser.DefaultPublicationParser
 
           /**
            * Application: aqui se inicializa el "motor" Readium una sola vez
@@ -192,14 +200,25 @@ jobs:
            */
           class LectorApp : Application() {
 
+              lateinit var assetRetriever: AssetRetriever
+                  private set
+
               lateinit var publicationOpener: PublicationOpener
                   private set
 
               override fun onCreate() {
                   super.onCreate()
                   val httpClient = DefaultHttpClient()
-                  val assetRetriever = AssetRetriever(contentResolver, httpClient)
-                  publicationOpener = PublicationOpener(assetRetriever = assetRetriever)
+                  assetRetriever = AssetRetriever(contentResolver, httpClient)
+                  publicationOpener = PublicationOpener(
+                      publicationParser = DefaultPublicationParser(
+                          context = this,
+                          httpClient = httpClient,
+                          assetRetriever = assetRetriever,
+                          // null: sin soporte PDF (solo EPUB).
+                          pdfFactory = null,
+                      ),
+                  )
               }
           }
           EOF
@@ -220,14 +239,12 @@ jobs:
           import androidx.appcompat.app.AppCompatActivity
           import androidx.lifecycle.lifecycleScope
           import kotlinx.coroutines.Dispatchers
-          import kotlinx.coroutines.flow.collect
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.withContext
           import org.json.JSONObject
           import org.readium.r2.navigator.epub.EpubNavigatorFactory
           import org.readium.r2.navigator.epub.EpubNavigatorFragment
           import org.readium.r2.shared.publication.Locator
-          import org.readium.r2.shared.publication.asset.FileAsset
           import java.io.File
           import java.text.SimpleDateFormat
           import java.util.Date
@@ -385,10 +402,18 @@ jobs:
                       currentFile = cached
                       currentBookName = displayName
 
-                      val asset = FileAsset(cached)
+                      // 1. File -> Asset (Readium detecta el formato solo).
+                      val asset = withContext(Dispatchers.IO) {
+                          app.assetRetriever.retrieve(cached)
+                              .getOrElse { error("Readium no pudo leer el archivo: ${it.message}") }
+                      }
+
+                      // 2. Asset -> Publication
                       val publication = withContext(Dispatchers.IO) {
-                          app.publicationOpener.open(asset, allowUserInteraction = true)
-                              .getOrElse { error("Readium no pudo abrir el EPUB: ${it.message ?: it}") }
+                          app.publicationOpener.open(
+                              asset = asset,
+                              allowUserInteraction = true,
+                          ).getOrElse { error("Readium no pudo abrir el EPUB: ${it.message}") }
                       }
 
                       // Buscar locator guardado (mismo nombre que el EPUB)
@@ -398,14 +423,12 @@ jobs:
                       homeView.visibility = View.GONE
                       readerView.visibility = View.VISIBLE
 
-                      // Crear navigator y meterlo en el contenedor
+                      // Crear navigator y meterlo en el contenedor.
+                      // listener = null (valor por defecto): no interceptamos taps ni
+                      // enlaces externos, el navigator usa su comportamiento estandar.
                       val factory = EpubNavigatorFactory(publication = publication)
-                      // Listener vacio: Readium 3.x expone los eventos de tap
-                      // via VisualNavigator.addInputListener() (opcional).
-                      // El interface Listener se implementa vacio.
                       supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
                           initialLocator = initialLocator,
-                          listener = object : EpubNavigatorFragment.Listener {}
                       )
                       val frag = supportFragmentManager.fragmentFactory
                           .instantiate(classLoader, EpubNavigatorFragment::class.java.name)
