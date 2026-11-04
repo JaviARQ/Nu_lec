@@ -93,10 +93,6 @@ jobs:
                   targetSdk = 35
                   versionCode = 7
                   versionName = "1.0"
-
-                  // Nombre del APK de salida: Nu_lec-debug.apk
-                  @Suppress("DEPRECATION")
-                  setProperty("archivesBaseName", "Nu_lec")
               }
 
               buildTypes {
@@ -1096,9 +1092,14 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
+      - name: Renombrar APK a Nu_lec-debug.apk
+        run: |
+          cd app/build/outputs/apk/debug/
+          mv app-debug.apk Nu_lec-debug.apk
+
       - name: Subir artifact
         uses: actions/upload-artifact@v5
         with:
           name: nu-lec-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/Nu_lec-debug.apk
           if-no-files-found: error
