@@ -1,6 +1,5 @@
 name: Build APK
 
-# Disparadores: cualquier push a main/master, o manual desde la pestaña Actions.
 on:
   push:
     branches: [main, master]
@@ -29,17 +28,11 @@ jobs:
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
 
       - name: Instalar SDK Platform 37 + build-tools
-        # Readium 3.4 exige compileSdk 37. El runner trae 35/36 pero no 37.
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-37" \
             "build-tools;37.0.0" > /dev/null || true
 
-      # ============================================================
-      # PROYECTO ANDROID (Kotlin) + READIUM 3.4.0
-      # Todo el proyecto se genera aqui mismo con heredocs.
-      # El usuario solo pega este archivo en .github/workflows/build-apk.yml
-      # ============================================================
       - name: Escribir archivos del proyecto
         run: |
           # --- settings.gradle.kts ---
@@ -65,15 +58,11 @@ jobs:
 
           # --- build.gradle.kts (root) ---
           cat > build.gradle.kts <<'EOF'
-          // Readium 3.4.0 se compilo con Kotlin 2.4.x. AGP 9.1 trae KGP 2.2.10 por
-          // defecto, que no entiende ese metadata. Se sobreescribe con buildscript
-          // classpath (mecanismo oficial de AGP 9.x para subir la version de KGP).
           buildscript {
               dependencies {
                   classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
               }
           }
-
           plugins {
               id("com.android.application") version "9.1.1" apply false
           }
@@ -90,7 +79,6 @@ jobs:
           # --- app/build.gradle.kts ---
           mkdir -p app
           cat > app/build.gradle.kts <<'EOF'
-          // AGP 9.x trae Kotlin integrado: no declaramos el plugin kotlin.android.
           plugins {
               id("com.android.application")
           }
@@ -103,7 +91,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 5
+                  versionCode = 6
                   versionName = "1.0"
               }
 
@@ -116,7 +104,6 @@ jobs:
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
-                  // Readium 3.4 exige "core library desugaring" habilitado.
                   isCoreLibraryDesugaringEnabled = true
               }
               buildFeatures {
@@ -124,8 +111,6 @@ jobs:
               }
           }
 
-          // En AGP 9.x, kotlinOptions{} dentro de android{} esta obsoleto.
-          // Se define a nivel top-level con kotlin { compilerOptions {} }.
           kotlin {
               compilerOptions {
                   jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -133,21 +118,15 @@ jobs:
           }
 
           dependencies {
-              // Core library desugaring (exigido por Readium 3.4).
               coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-
               implementation("androidx.core:core-ktx:1.13.1")
               implementation("androidx.appcompat:appcompat:1.7.0")
               implementation("com.google.android.material:material:1.12.0")
               implementation("androidx.activity:activity-ktx:1.9.2")
               implementation("androidx.fragment:fragment-ktx:1.8.3")
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.5")
+              implementation("androidx.recyclerview:recyclerview:1.3.2")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-
-              // Readium Kotlin Toolkit 3.4.0
-              // groupId en Maven Central: org.readium.kotlin-toolkit
-              // En 3.x el navegador EPUB (EpubNavigatorFactory/Fragment)
-              // va dentro de readium-navigator (NO existe readium-navigator-epub).
               implementation("org.readium.kotlin-toolkit:readium-shared:3.4.0")
               implementation("org.readium.kotlin-toolkit:readium-streamer:3.4.0")
               implementation("org.readium.kotlin-toolkit:readium-navigator:3.4.0")
@@ -162,28 +141,26 @@ jobs:
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
               <application
                   android:name=".LectorApp"
                   android:allowBackup="true"
                   android:label="@string/app_name"
                   android:supportsRtl="true"
                   android:theme="@style/Theme.LectorEpub">
-
                   <activity
                       android:name=".MainActivity"
-                      android:exported="true">
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
               </application>
-
           </manifest>
           EOF
 
-          # --- LectorApp.kt (Application, inicializa Readium una sola vez) ---
+          # --- LectorApp.kt ---
           cat > app/src/main/java/com/lector/epub/LectorApp.kt <<'EOF'
           package com.lector.epub
 
@@ -193,18 +170,11 @@ jobs:
           import org.readium.r2.streamer.PublicationOpener
           import org.readium.r2.streamer.parser.DefaultPublicationParser
 
-          /**
-           * Application: aqui se inicializa el "motor" Readium una sola vez
-           * mientras la app este abierta. No necesita configuracion manual.
-           */
           class LectorApp : Application() {
-
               lateinit var assetRetriever: AssetRetriever
                   private set
-
               lateinit var publicationOpener: PublicationOpener
                   private set
-
               override fun onCreate() {
                   super.onCreate()
                   val httpClient = DefaultHttpClient()
@@ -214,7 +184,6 @@ jobs:
                           context = this,
                           httpClient = httpClient,
                           assetRetriever = assetRetriever,
-                          // null: sin soporte PDF (solo EPUB).
                           pdfFactory = null,
                       ),
                   )
@@ -222,24 +191,114 @@ jobs:
           }
           EOF
 
-          # --- MainActivity.kt (toda la logica de la app) ---
+          # --- LibraryEntry.kt ---
+          cat > app/src/main/java/com/lector/epub/LibraryEntry.kt <<'EOF'
+          package com.lector.epub
+
+          import android.graphics.Bitmap
+          import android.net.Uri
+
+          data class LibraryEntry(
+              val fileName: String,
+              val title: String,
+              val cover: Bitmap?,
+              val documentUri: Uri,
+          )
+          EOF
+
+          # --- LibraryAdapter.kt ---
+          cat > app/src/main/java/com/lector/epub/LibraryAdapter.kt <<'EOF'
+          package com.lector.epub
+
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import androidx.recyclerview.widget.RecyclerView
+
+          class LibraryAdapter(
+              private val items: MutableList<LibraryEntry> = mutableListOf(),
+              private val onClick: (LibraryEntry) -> Unit,
+          ) : RecyclerView.Adapter<LibraryAdapter.VH>() {
+
+              fun submit(newItems: List<LibraryEntry>) {
+                  items.clear()
+                  items.addAll(newItems)
+                  notifyDataSetChanged()
+              }
+
+              inner class VH(val root: LinearLayout) : RecyclerView.ViewHolder(root) {
+                  val cover: ImageView = (root.getChildAt(0) as ImageView)
+                  val title: TextView = (root.getChildAt(1) as TextView)
+              }
+
+              override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+                  val ctx = parent.context
+                  val dp = { v: Int -> (v * ctx.resources.displayMetrics.density).toInt() }
+                  val root = LinearLayout(ctx).apply {
+                      orientation = LinearLayout.VERTICAL
+                      layoutParams = ViewGroup.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT)
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                  }
+                  val cover = ImageView(ctx).apply {
+                      layoutParams = LinearLayout.LayoutParams(dp(104), dp(150))
+                      scaleType = ImageView.ScaleType.CENTER_CROP
+                      setBackgroundColor(0xFFEEEEEE.toInt())
+                  }
+                  val title = TextView(ctx).apply {
+                      layoutParams = LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT)
+                      maxLines = 2
+                      textSize = 12f
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      setPadding(0, dp(4), 0, 0)
+                  }
+                  root.addView(cover)
+                  root.addView(title)
+                  root.setOnClickListener { onClick(items[bindingAdapterPosition]) }
+                  return VH(root)
+              }
+
+              override fun onBindViewHolder(holder: VH, position: Int) {
+                  val e = items[position]
+                  holder.cover.setImageBitmap(e.cover)
+                  holder.title.text = e.title
+              }
+
+              override fun getItemCount(): Int = items.size
+          }
+          EOF
+
+          # --- MainActivity.kt ---
           cat > app/src/main/java/com/lector/epub/MainActivity.kt <<'EOF'
           package com.lector.epub
 
           import android.content.Intent
+          import android.graphics.Bitmap
+          import android.graphics.Color
           import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
           import android.provider.DocumentsContract
           import android.provider.DocumentsContract.Document
           import android.provider.OpenableColumns
+          import android.view.Gravity
+          import android.view.MotionEvent
           import android.view.View
+          import android.view.WindowInsets
+          import android.view.WindowInsetsController
+          import android.widget.Button
           import android.widget.FrameLayout
           import android.widget.LinearLayout
+          import android.widget.ProgressBar
+          import android.widget.SeekBar
           import android.widget.TextView
           import android.widget.Toast
           import androidx.activity.result.contract.ActivityResultContracts
           import androidx.appcompat.app.AppCompatActivity
           import androidx.lifecycle.lifecycleScope
+          import androidx.recyclerview.widget.GridLayoutManager
+          import androidx.recyclerview.widget.RecyclerView
           import kotlinx.coroutines.CoroutineScope
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.Job
@@ -250,62 +309,65 @@ jobs:
           import org.json.JSONObject
           import org.readium.r2.navigator.epub.EpubNavigatorFactory
           import org.readium.r2.navigator.epub.EpubNavigatorFragment
+          import org.readium.r2.navigator.preferences.FontFamily
+          import org.readium.r2.navigator.preferences.Theme
+          import org.readium.r2.shared.ExperimentalReadiumApi
           import org.readium.r2.shared.publication.Locator
+          import org.readium.r2.shared.publication.services.cover
           import java.io.File
           import java.text.SimpleDateFormat
           import java.util.Date
           import java.util.Locale
 
-          /**
-           * Actividad principal. Dos estados:
-           *   - HOME:   boton Elegir carpeta sidecars + boton Abrir EPUB.
-           *   - READER: boton Cerrar + el lector de Readium.
-           *
-           * La posicion de lectura se guarda:
-           *   1) En SharedPreferences (instantaneo, interno, no accesible al usuario).
-           *   2) En un archivo <nombre-libro>.json dentro de la carpeta sidecars
-           *      que el usuario elige una sola vez (auto-export silencioso).
-           *
-           * Al abrir un EPUB, la app busca primero el sidecar .json y, si existe,
-           * abre directamente en esa posicion. Asi, copiando la carpeta sidecars
-           * a otro dispositivo, la posicion se recupera sola.
-           */
           class MainActivity : AppCompatActivity() {
 
               private val app: LectorApp get() = application as LectorApp
-
-              // Scope que sobrevive al cierre de la actividad: para el flush final
-              // del sidecar cuando el usuario cierra el libro.
               private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-              // Vistas (se crean por codigo, sin XML)
-              private lateinit var homeView: LinearLayout
-              private lateinit var readerView: LinearLayout
+              // ----- Vistas: LIBRARY -----
+              private lateinit var libraryRoot: LinearLayout
+              private lateinit var libraryHint: TextView
+              private lateinit var libraryRecycler: RecyclerView
+              private val libraryAdapter = LibraryAdapter { entry ->
+                  lifecycleScope.launch { openEpubFromLibrary(entry) }
+              }
+
+              // ----- Vistas: READER -----
+              private lateinit var readerRoot: FrameLayout
               private lateinit var navContainer: FrameLayout
-              private lateinit var statusText: TextView
-              private lateinit var sidecarStatusText: TextView
+              private lateinit var topBar: LinearLayout
+              private lateinit var topBarTitle: TextView
+              private lateinit var bottomBar: LinearLayout
+              private lateinit var progressText: TextView
+              private lateinit var progressBar: ProgressBar
 
-              // Estado
-              private var currentFile: File? = null
-              private var currentBookName: String? = null
+              // ----- Vistas: PANEL DE AJUSTES -----
+              private lateinit var settingsPanel: LinearLayout
+              private lateinit var brightnessSeekBar: SeekBar
+              private lateinit var brightnessValue: TextView
+              private lateinit var fontSizeMinus: Button
+              private lateinit var fontSizePlus: Button
+              private lateinit var fontSizeValue: TextView
+              private var settingsVisible = false
+
+              // ----- Estado -----
               private var navigator: EpubNavigatorFragment? = null
-
-              // Carpeta sidecar persistida (tree URI SAF). Null = no elegida.
-              private var sidecarTreeUri: Uri? = null
-
-              // Debounce del guardado sidecar (2s sin cambios antes de escribir).
+              private var currentBookName: String? = null
+              private var currentBookTitle: String? = null
+              private var currentDocumentUri: Uri? = null
               private var sidecarJob: Job? = null
               private var lastLocator: Locator? = null
+              private var lastTotalPages: Int = 1
+              private var lastPageIndex: Int = 0
+              private var libraryTreeUri: Uri? = null
 
-              // Selector de EPUB
               private val openEpubLauncher = registerForActivityResult(
                   ActivityResultContracts.OpenDocument()
               ) { uri ->
-                  if (uri != null) lifecycleScope.launch { openEpub(uri) }
+                  if (uri != null) lifecycleScope.launch { openEpubExternal(uri) }
               }
 
-              // Selector de carpeta sidecar (una sola vez por dispositivo)
-              private val pickSidecarTreeLauncher = registerForActivityResult(
+              private val pickLibraryTreeLauncher = registerForActivityResult(
                   ActivityResultContracts.OpenDocumentTree()
               ) { uri ->
                   if (uri != null) {
@@ -314,188 +376,396 @@ jobs:
                           Intent.FLAG_GRANT_READ_URI_PERMISSION or
                               Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                       )
-                      prefs().edit().putString("sidecar_tree_uri", uri.toString()).apply()
-                      sidecarTreeUri = uri
-                      updateSidecarStatus()
-                      Toast.makeText(this, "Carpeta sidecars guardada", Toast.LENGTH_SHORT).show()
+                      prefs().edit().putString("library_tree_uri", uri.toString()).apply()
+                      libraryTreeUri = uri
+                      libraryHint.text = "Biblioteca: ${uri.lastPathSegment ?: uri}"
+                      lifecycleScope.launch { reloadLibrary() }
                   }
               }
 
+              @OptIn(ExperimentalReadiumApi::class)
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  sidecarTreeUri = prefs().getString("sidecar_tree_uri", null)?.let {
+                  libraryTreeUri = prefs().getString("library_tree_uri", null)?.let {
                       runCatching { Uri.parse(it) }.getOrNull()
                   }
                   buildUI()
-                  updateSidecarStatus()
+                  if (libraryTreeUri != null) {
+                      libraryHint.text = "Biblioteca: ${libraryTreeUri!!.lastPathSegment ?: libraryTreeUri}"
+                      lifecycleScope.launch { reloadLibrary() }
+                  }
               }
 
               private fun buildUI() {
-                  val root = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                  }
+                  val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+                  val root = FrameLayout(this).apply { setBackgroundColor(0xFFFAFAFA.toInt()) }
 
-                  // ----- HOME -----
-                  homeView = LinearLayout(this).apply {
+                  // ============== LIBRARY ==============
+                  libraryRoot = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(64, 120, 64, 64)
+                      setPadding(dp(24), dp(48), dp(24), dp(24))
                   }
-                  homeView.addView(TextView(this).apply {
+                  libraryRoot.addView(TextView(this).apply {
                       text = "Lector EPUB"
                       textSize = 28f
-                      setPadding(0, 0, 0, 16)
+                      setPadding(0, 0, 0, dp(8))
                   })
-                  homeView.addView(TextView(this).apply {
-                      text = "Motor: Readium 3.4"
-                      textSize = 14f
-                      setPadding(0, 0, 0, 32)
-                  })
-
-                  // Estado de la carpeta sidecar (muestra la ruta o un aviso)
-                  sidecarStatusText = TextView(this).apply {
+                  libraryRoot.addView(TextView(this).apply {
+                      text = "Biblioteca y lector de libros"
                       textSize = 13f
-                      setPadding(0, 0, 0, 16)
+                      setPadding(0, 0, 0, dp(24))
+                      setTextColor(0xFF888888.toInt())
+                  })
+                  libraryHint = TextView(this).apply {
+                      textSize = 13f
+                      setPadding(0, 0, 0, dp(8))
+                      text = if (libraryTreeUri == null)
+                          "Sin carpeta biblioteca. Elige una para que contenga tus EPUBs."
+                      else "Biblioteca: ${libraryTreeUri?.lastPathSegment ?: libraryTreeUri}"
                   }
-                  homeView.addView(sidecarStatusText)
-
-                  // Boton elegir / cambiar carpeta sidecars
-                  homeView.addView(android.widget.Button(this).apply {
-                      text = "Elegir carpeta sidecars"
-                      setOnClickListener { pickSidecarTreeLauncher.launch(null) }
+                  libraryRoot.addView(libraryHint)
+                  libraryRoot.addView(Button(this).apply {
+                      text = "Elegir carpeta biblioteca"
+                      setOnClickListener { pickLibraryTreeLauncher.launch(null) }
                   })
-
-                  // Separador visual
-                  homeView.addView(TextView(this).apply {
-                      setPadding(0, 24, 0, 0)
-                  })
-
-                  // Abrir EPUB
-                  homeView.addView(android.widget.Button(this).apply {
-                      text = "Abrir EPUB"
+                  libraryRoot.addView(Button(this).apply {
+                      text = "Abrir EPUB externo"
                       setOnClickListener {
                           openEpubLauncher.launch(arrayOf(
-                              "application/epub+zip",
-                              "application/octet-stream"
+                              "application/epub+zip", "application/octet-stream"
                           ))
                       }
                   })
-                  statusText = TextView(this).apply {
-                      setPadding(0, 32, 0, 0)
-                      textSize = 13f
-                  }
-                  homeView.addView(statusText)
-
-                  // ----- READER -----
-                  readerView = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      visibility = View.GONE
-                  }
-                  val topBar = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      setPadding(32, 32, 32, 16)
-                  }
-                  topBar.addView(android.widget.Button(this).apply {
-                      text = "Cerrar"
-                      setOnClickListener { closeBook() }
-                  })
-                  readerView.addView(topBar)
-
-                  navContainer = FrameLayout(this).apply {
-                      id = View.generateViewId()
+                  libraryRecycler = RecyclerView(this).apply {
+                      layoutManager = GridLayoutManager(this@MainActivity, 3)
+                      adapter = libraryAdapter
                       layoutParams = LinearLayout.LayoutParams(
                           LinearLayout.LayoutParams.MATCH_PARENT,
-                          0,
-                          1f
-                      )
+                          LinearLayout.LayoutParams.MATCH_PARENT
+                      ).apply { topMargin = dp(16) }
                   }
-                  readerView.addView(navContainer)
+                  libraryRoot.addView(libraryRecycler)
+                  root.addView(libraryRoot, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.MATCH_PARENT
+                  ))
 
-                  root.addView(homeView, LinearLayout.LayoutParams(
-                      LinearLayout.LayoutParams.MATCH_PARENT,
-                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  // ============== READER (fullscreen) ==============
+                  readerRoot = FrameLayout(this).apply { visibility = View.GONE }
+                  navContainer = FrameLayout(this).apply {
+                      id = View.generateViewId()
+                      setBackgroundColor(Color.BLACK)
+                  }
+                  readerRoot.addView(navContainer, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.MATCH_PARENT
                   ))
-                  root.addView(readerView, LinearLayout.LayoutParams(
-                      LinearLayout.LayoutParams.MATCH_PARENT,
-                      LinearLayout.LayoutParams.MATCH_PARENT
+
+                  // ----- Top bar -----
+                  topBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setBackgroundColor(0xCC000000.toInt())
+                      setPadding(dp(16), dp(24), dp(16), dp(12))
+                      visibility = View.GONE
+                  }
+                  topBar.addView(Button(this).apply {
+                      text = "< Atras"
+                      setOnClickListener { closeBook() }
+                  })
+                  topBarTitle = TextView(this).apply {
+                      textSize = 14f
+                      maxLines = 1
+                      setTextColor(Color.WHITE)
+                      layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                          marginStart = dp(16); marginEnd = dp(16)
+                      }
+                  }
+                  topBar.addView(topBarTitle)
+                  topBar.addView(Button(this).apply {
+                      text = "Ajustes"
+                      setOnClickListener { toggleSettingsPanel() }
+                  })
+                  readerRoot.addView(topBar, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      Gravity.TOP
                   ))
+
+                  // ----- Bottom bar: progreso -----
+                  bottomBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(0xCC000000.toInt())
+                      setPadding(dp(16), dp(12), dp(16), dp(24))
+                      visibility = View.GONE
+                  }
+                  val progressRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  progressText = TextView(this).apply {
+                      text = "0 / 0"
+                      setTextColor(Color.WHITE)
+                      textSize = 12f
+                  }
+                  progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      progress = 0
+                      layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                          marginStart = dp(12); marginEnd = dp(12)
+                      }
+                  }
+                  val chapterText = TextView(this).apply {
+                      text = ""
+                      setTextColor(0xFFCCCCCC.toInt())
+                      textSize = 11f
+                      maxLines = 1
+                  }
+                  progressRow.addView(progressText)
+                  progressRow.addView(progressBar)
+                  progressRow.addView(chapterText)
+                  bottomBar.addView(progressRow)
+                  readerRoot.addView(bottomBar, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      Gravity.BOTTOM
+                  ))
+
+                  // ----- Panel de Ajustes -----
+                  settingsPanel = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(0xF2FFFFFF.toInt())
+                      setPadding(dp(20), dp(28), dp(20), dp(28))
+                      visibility = View.GONE
+                      elevation = dp(8).toFloat()
+                  }
+                  settingsPanel.addView(TextView(this).apply {
+                      text = "Tema"
+                      textSize = 13f
+                      setPadding(0, 0, 0, dp(4))
+                  })
+                  val themeButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  fun themeBtn(label: String, theme: Theme?) = Button(this).apply {
+                      text = label
+                      setOnClickListener { applyTheme(theme) }
+                  }
+                  themeButtons.addView(themeBtn("Auto", null))
+                  themeButtons.addView(themeBtn("Claro", Theme.LIGHT))
+                  themeButtons.addView(themeBtn("Sepia", Theme.SEPIA))
+                  themeButtons.addView(themeBtn("Oscuro", Theme.DARK))
+                  settingsPanel.addView(themeButtons)
+
+                  settingsPanel.addView(TextView(this).apply {
+                      text = "Brillo"
+                      textSize = 13f
+                      setPadding(0, dp(16), 0, dp(4))
+                  })
+                  val brightnessRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  brightnessSeekBar = SeekBar(this).apply {
+                      max = 100
+                      progress = (loadBrightness() * 100).toInt().coerceIn(0, 100)
+                      setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                          override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                              if (fromUser) applyBrightness(p / 100f)
+                              brightnessValue.text = "$p%"
+                          }
+                          override fun onStartTrackingTouch(sb: SeekBar?) {}
+                          override fun onStopTrackingTouch(sb: SeekBar?) {
+                              saveBrightness((brightnessSeekBar.progress) / 100f)
+                          }
+                      })
+                      layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+                  brightnessValue = TextView(this).apply {
+                      text = "${brightnessSeekBar.progress}%"
+                      setPadding(dp(12), 0, 0, 0)
+                  }
+                  brightnessRow.addView(brightnessSeekBar)
+                  brightnessRow.addView(brightnessValue)
+                  settingsPanel.addView(brightnessRow)
+
+                  settingsPanel.addView(TextView(this).apply {
+                      text = "Fuente"
+                      textSize = 13f
+                      setPadding(0, dp(16), 0, dp(4))
+                  })
+                  val fontButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  fun fontBtn(label: String, fam: String) = Button(this).apply {
+                      text = label
+                      setOnClickListener { applyFontFamily(fam) }
+                  }
+                  fontButtons.addView(fontBtn("Original", ""))
+                  fontButtons.addView(fontBtn("Serif", "PT Serif"))
+                  fontButtons.addView(fontBtn("Sans", "Roboto"))
+                  fontButtons.addView(fontBtn("Sans Pro", "Source Sans Pro"))
+                  settingsPanel.addView(fontButtons)
+
+                  val fontSizeRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(0, dp(12), 0, 0)
+                  }
+                  fontSizeMinus = Button(this).apply {
+                      text = "A-"
+                      setOnClickListener { applyFontSizeDelta(-0.1) }
+                  }
+                  fontSizeValue = TextView(this).apply {
+                      text = "100%"
+                      setPadding(dp(12), 0, dp(12), 0)
+                      gravity = Gravity.CENTER
+                      layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+                  fontSizePlus = Button(this).apply {
+                      text = "A+"
+                      setOnClickListener { applyFontSizeDelta(+0.1) }
+                  }
+                  fontSizeRow.addView(fontSizeMinus)
+                  fontSizeRow.addView(fontSizeValue)
+                  fontSizeRow.addView(fontSizePlus)
+                  settingsPanel.addView(fontSizeRow)
+
+                  settingsPanel.addView(TextView(this).apply {
+                      text = "Biblioteca"
+                      textSize = 13f
+                      setPadding(0, dp(20), 0, dp(4))
+                  })
+                  settingsPanel.addView(Button(this).apply {
+                      text = "Cambiar carpeta biblioteca"
+                      setOnClickListener { pickLibraryTreeLauncher.launch(null) }
+                  })
+
+                  readerRoot.addView(settingsPanel, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      Gravity.CENTER
+                  ))
+
+                  root.addView(readerRoot, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.MATCH_PARENT
+                  ))
+
                   setContentView(root)
               }
 
-              private fun updateSidecarStatus() {
-                  val tree = sidecarTreeUri
-                  sidecarStatusText.text = if (tree != null) {
-                      // Mostrar un resumen legible de la ruta SAF
-                      "Sidecars en: ${tree.lastPathSegment ?: tree}"
-                  } else {
-                      "Sin carpeta sidecars. Para sincronizar entre " +
-                          "dispositivos, elige una (solo se hace una vez)."
+              // ============== LIBRARY ==============
+              private suspend fun reloadLibrary() {
+                  val tree = libraryTreeUri ?: return
+                  libraryHint.text = "Cargando biblioteca..."
+                  val entries = withContext(Dispatchers.IO) {
+                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
+                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId)
+                      val list = mutableListOf<LibraryEntry>()
+                      contentResolver.query(children, arrayOf(
+                          Document.COLUMN_DOCUMENT_ID,
+                          Document.COLUMN_DISPLAY_NAME,
+                          Document.COLUMN_MIME_TYPE
+                      ), null, null, null)?.use { c ->
+                          val idIdx = c.getColumnIndexOrThrow(Document.COLUMN_DOCUMENT_ID)
+                          val nameIdx = c.getColumnIndexOrThrow(Document.COLUMN_DISPLAY_NAME)
+                          val mimeIdx = c.getColumnIndexOrThrow(Document.COLUMN_MIME_TYPE)
+                          while (c.moveToNext()) {
+                              val name = c.getString(nameIdx) ?: continue
+                              val mime = c.getString(mimeIdx) ?: ""
+                              if (mime != "application/epub+zip" &&
+                                  !name.lowercase().endsWith(".epub")) continue
+                              val docId = c.getString(idIdx)
+                              val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
+                              val meta = readMetadata(docUri, name)
+                              list.add(LibraryEntry(
+                                  fileName = name,
+                                  title = meta.first,
+                                  cover = meta.second,
+                                  documentUri = docUri,
+                              ))
+                          }
+                      }
+                      list.sortedBy { it.title.lowercase() }
+                  }
+                  libraryAdapter.submit(entries)
+                  libraryHint.text = "Biblioteca: ${tree.lastPathSegment ?: tree} (${entries.size} libros)"
+              }
+
+              private suspend fun readMetadata(uri: Uri, fallbackName: String): Pair<String, Bitmap?> = withContext(Dispatchers.IO) {
+                  try {
+                      val cached = File.createTempFile("meta_", ".epub", cacheDir)
+                      contentResolver.openInputStream(uri)?.use { input ->
+                          cached.outputStream().use { input.copyTo(it) }
+                      } ?: return@withContext fallbackName to null
+                      val assetResult = app.assetRetriever.retrieve(cached)
+                      val asset = assetResult.getOrNull()
+                          ?: return@withContext fallbackName to null
+                      val pubResult = app.publicationOpener.open(asset, allowUserInteraction = false)
+                      val pub = pubResult.getOrNull() ?: return@withContext fallbackName to null
+                      val title = pub.metadata.title ?: fallbackName
+                      val cover = runCatching { pub.cover() }.getOrNull()
+                      pub.close()
+                      cached.delete()
+                      title to cover
+                  } catch (_: Throwable) {
+                      fallbackName to null
                   }
               }
 
-              // ----- Abrir un EPUB desde un URI (SAF) -----
-              private suspend fun openEpub(uri: Uri) {
-                  statusText.text = "Abriendo..."
+              private suspend fun openEpubFromLibrary(entry: LibraryEntry) {
+                  openEpubInternal(uri = entry.documentUri, displayName = entry.fileName, title = entry.title)
+              }
+
+              private suspend fun openEpubExternal(uri: Uri) {
+                  val name = queryDisplayName(uri) ?: "libro.epub"
+                  openEpubInternal(uri = uri, displayName = name, title = name.substringBeforeLast('.'))
+              }
+
+              // ============== READER ==============
+              @OptIn(ExperimentalReadiumApi::class)
+              private suspend fun openEpubInternal(uri: Uri, displayName: String, title: String) {
                   try {
-                      val displayName = queryDisplayName(uri) ?: "libro.epub"
-                      // Copiar a cacheDir: Readium trabaja mejor con un File real.
                       val cached = File(cacheDir, displayName)
                       withContext(Dispatchers.IO) {
                           contentResolver.openInputStream(uri)?.use { input ->
-                              cached.outputStream().use { out -> input.copyTo(out) }
+                              cached.outputStream().use { input.copyTo(it) }
                           } ?: error("No se pudo leer el archivo seleccionado")
                       }
-
-                      currentFile = cached
+                      currentDocumentUri = uri
                       currentBookName = displayName
+                      currentBookTitle = title
 
-                      // 1. File -> Asset (Readium detecta el formato solo).
-                      // En Readium 3.4, getOrNull() y failureOrNull() son miembros
-                      // directos de Try (no necesitan import).
                       val assetResult = withContext(Dispatchers.IO) {
                           app.assetRetriever.retrieve(cached)
                       }
                       val asset = assetResult.getOrNull()
                           ?: error("Readium no pudo leer el archivo: " +
                               "${assetResult.failureOrNull()?.message ?: "formato no reconocido"}")
-
-                      // 2. Asset -> Publication
                       val publicationResult = withContext(Dispatchers.IO) {
-                          app.publicationOpener.open(
-                              asset = asset,
-                              allowUserInteraction = true,
-                          )
+                          app.publicationOpener.open(asset, allowUserInteraction = true)
                       }
                       val publication = publicationResult.getOrNull()
                           ?: error("Readium no pudo abrir el EPUB: " +
                               "${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
 
-                      // Buscar posicion guardada:
-                      //   1) sidecar .json en la carpeta (si fue elegida) -> sincronizable
-                      //   2) si no, SharedPreferences interno -> solo local
                       val initialLocator = loadSidecar(displayName) ?: loadLocator(displayName)
 
-                      // Mostrar reader
-                      homeView.visibility = View.GONE
-                      readerView.visibility = View.VISIBLE
+                      libraryRoot.visibility = View.GONE
+                      readerRoot.visibility = View.VISIBLE
+                      enterImmersive()
 
-                      // Crear navigator y meterlo en el contenedor.
+                      val prefs = currentEpubPreferences()
                       val factory = EpubNavigatorFactory(publication = publication)
                       supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
                           initialLocator = initialLocator,
+                          initialPreferences = prefs,
+                          paginationListener = object : EpubNavigatorFragment.PaginationListener {
+                              override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
+                                  lastPageIndex = pageIndex
+                                  lastTotalPages = totalPages
+                                  updateProgress(locator)
+                              }
+                          },
                       )
                       val frag = supportFragmentManager.fragmentFactory
                           .instantiate(classLoader, EpubNavigatorFragment::class.java.name)
                           as EpubNavigatorFragment
-
                       supportFragmentManager.beginTransaction()
                           .replace(navContainer.id, frag, "epub_nav")
                           .commitNowAllowingStateLoss()
-
                       navigator = frag
+                      topBarTitle.text = title
 
-                      // Escuchar cambios de posicion (Flow en v3):
-                      //  - SharedPrefs: guardado inmediato (no se pierde nada en crash).
-                      //  - Sidecar JSON: debounce de 2s (no escribir a disco en cada toque).
                       lifecycleScope.launch {
                           frag.currentLocator.collect { locator ->
                               lastLocator = locator
@@ -505,19 +775,44 @@ jobs:
                                   delay(2000)
                                   saveSidecar(displayName, locator)
                               }
+                              updateProgress(locator)
                           }
                       }
-
-                      statusText.text = ""
                   } catch (e: Throwable) {
-                      statusText.text = ""
                       Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
                       closeBook()
                   }
               }
 
+              fun toggleReaderOverlay() {
+                  if (settingsVisible) {
+                      toggleSettingsPanel()
+                      return
+                  }
+                  val newVisibility = if (topBar.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                  topBar.visibility = newVisibility
+                  bottomBar.visibility = newVisibility
+              }
+
+              private fun toggleSettingsPanel() {
+                  settingsVisible = !settingsVisible
+                  settingsPanel.visibility = if (settingsVisible) View.VISIBLE else View.GONE
+                  if (settingsVisible) {
+                      topBar.visibility = View.VISIBLE
+                      bottomBar.visibility = View.VISIBLE
+                      brightnessSeekBar.progress = (loadBrightness() * 100).toInt().coerceIn(0, 100)
+                      brightnessValue.text = "${brightnessSeekBar.progress}%"
+                      fontSizeValue.text = "${((loadFontSize() ?: 1.0) * 100).toInt()}%"
+                  }
+              }
+
+              private fun updateProgress(locator: Locator) {
+                  val pct = if (lastTotalPages > 0) (lastPageIndex * 100 / lastTotalPages) else 0
+                  progressText.text = "${lastPageIndex + 1} / $lastTotalPages  ($pct%)"
+                  progressBar.progress = pct
+              }
+
               private fun closeBook() {
-                  // Flush final del sidecar (si quedaba un debounce pendiente).
                   sidecarJob?.cancel()
                   val book = currentBookName
                   val loc = lastLocator
@@ -525,7 +820,8 @@ jobs:
                       appScope.launch { saveSidecar(book, loc) }
                   }
                   lastLocator = null
-
+                  lastPageIndex = 0
+                  lastTotalPages = 1
                   navigator?.let {
                       try {
                           supportFragmentManager.beginTransaction().remove(it)
@@ -533,16 +829,143 @@ jobs:
                       } catch (_: Throwable) {}
                   }
                   navigator = null
-                  currentFile = null
                   currentBookName = null
-                  readerView.visibility = View.GONE
-                  homeView.visibility = View.VISIBLE
+                  currentBookTitle = null
+                  currentDocumentUri = null
+                  exitImmersive()
+                  settingsPanel.visibility = View.GONE
+                  settingsVisible = false
+                  topBar.visibility = View.GONE
+                  bottomBar.visibility = View.GONE
+                  readerRoot.visibility = View.GONE
+                  libraryRoot.visibility = View.VISIBLE
+                  lifecycleScope.launch { reloadLibrary() }
               }
 
-              // ----- Persistencia interna (SharedPreferences) -----
-              // Clave: nombre del archivo EPUB. Valor: JSON del Locator.
-              private fun prefs() =
-                  getSharedPreferences("lector_positions", MODE_PRIVATE)
+              // ============== INMERSION FULLSCREEN ==============
+              private fun enterImmersive() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                      window.setDecorFitsSystemWindows(false)
+                      window.insetsController?.let {
+                          it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                          it.hide(WindowInsets.Type.systemBars())
+                      }
+                  } else {
+                      @Suppress("DEPRECATION")
+                      window.decorView.systemUiVisibility = (
+                          View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                              or View.SYSTEM_UI_FLAG_FULLSCREEN
+                              or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                              or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                              or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                              or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                      )
+                  }
+              }
+
+              private fun exitImmersive() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                      window.setDecorFitsSystemWindows(true)
+                      window.insetsController?.show(WindowInsets.Type.systemBars())
+                  } else {
+                      @Suppress("DEPRECATION")
+                      window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                  }
+              }
+
+              // ============== PREFERENCIAS ==============
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun currentEpubPreferences(): org.readium.r2.navigator.epub.EpubPreferences {
+                  return org.readium.r2.navigator.epub.EpubPreferences(
+                      theme = loadTheme(),
+                      fontFamily = loadFontFamily()?.let { FontFamily(it) },
+                      fontSize = loadFontSize(),
+                  )
+              }
+
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun applyTheme(theme: Theme?) {
+                  prefs().edit().putString("pref_theme", theme?.name ?: "AUTO").apply()
+                  navigator?.submitPreferences(currentEpubPreferences())
+              }
+
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun applyFontFamily(family: String) {
+                  prefs().edit().putString("pref_font_family", family).apply()
+                  navigator?.submitPreferences(currentEpubPreferences())
+              }
+
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun applyFontSizeDelta(delta: Double) {
+                  val cur = loadFontSize() ?: 1.0
+                  val new = (cur + delta).coerceIn(0.5, 3.0)
+                  prefs().edit().putFloat("pref_font_size", new.toFloat()).apply()
+                  fontSizeValue.text = "${(new * 100).toInt()}%"
+                  navigator?.submitPreferences(currentEpubPreferences())
+              }
+
+              private fun applyBrightness(factor: Float) {
+                  val lp = window.attributes
+                  lp.screenBrightness = factor.coerceIn(0.01f, 1f)
+                  window.attributes = lp
+              }
+
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun loadTheme(): Theme? = when (prefs().getString("pref_theme", "AUTO")) {
+                  "LIGHT" -> Theme.LIGHT
+                  "SEPIA" -> Theme.SEPIA
+                  "DARK" -> Theme.DARK
+                  else -> null
+              }
+
+              private fun loadFontFamily(): String? =
+                  prefs().getString("pref_font_family", null)?.takeIf { it.isNotEmpty() }
+
+              private fun loadFontSize(): Double? =
+                  if (prefs().contains("pref_font_size"))
+                      prefs().getFloat("pref_font_size", 1f).toDouble()
+                  else null
+
+              private fun loadBrightness(): Float =
+                  prefs().getFloat("pref_brightness", 0.5f)
+
+              private fun saveBrightness(factor: Float) {
+                  prefs().edit().putFloat("pref_brightness", factor.coerceIn(0.01f, 1f)).apply()
+              }
+
+              // ============== BACK ==============
+              @Suppress("DEPRECATION")
+              override fun onBackPressed() {
+                  if (readerRoot.visibility == View.VISIBLE) closeBook()
+                  else super.onBackPressed()
+              }
+
+              // Tap en el centro del lector -> toggle overlays.
+              override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                  if (readerRoot.visibility == View.VISIBLE && ev.action == MotionEvent.ACTION_DOWN) {
+                      val w = resources.displayMetrics.widthPixels
+                      val h = resources.displayMetrics.heightPixels
+                      val inCenterX = ev.x in (w * 0.30f)..(w * 0.70f)
+                      val inCenterY = ev.y in (h * 0.30f)..(h * 0.70f)
+                      if (settingsVisible) {
+                          val panelLoc = IntArray(2)
+                          settingsPanel.getLocationOnScreen(panelLoc)
+                          val inPanel = ev.x >= panelLoc[0] && ev.x <= panelLoc[0] + settingsPanel.width &&
+                              ev.y >= panelLoc[1] && ev.y <= panelLoc[1] + settingsPanel.height
+                          if (!inPanel) {
+                              toggleSettingsPanel()
+                              return true
+                          }
+                      } else if (inCenterX && inCenterY) {
+                          toggleReaderOverlay()
+                          return true
+                      }
+                  }
+                  return super.dispatchTouchEvent(ev)
+              }
+
+              // ============== PERSISTENCIA POSICION ==============
+              private fun prefs() = getSharedPreferences("lector_positions", MODE_PRIVATE)
 
               private fun loadLocator(bookName: String): Locator? {
                   val json = prefs().getString(bookName, null) ?: return null
@@ -550,26 +973,18 @@ jobs:
               }
 
               private fun saveLocator(bookName: String, locator: Locator) {
-                  val json = locator.toJSON().toString()
-                  prefs().edit().putString(bookName, json).apply()
+                  prefs().edit().putString(bookName, locator.toJSON().toString()).apply()
               }
 
-              // ----- Sidecar JSON automatico (carpeta SAF elegida por el usuario) -----
-
-              // Busca en la carpeta sidecars un archivo <nombre-libro>.json
-              // y devuelve su Uri, o null si no existe.
               private suspend fun findSidecarUri(bookName: String): Uri? {
-                  val tree = sidecarTreeUri ?: return null
+                  val tree = libraryTreeUri ?: return null
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
                   return withContext(Dispatchers.IO) {
                       val treeDocId = DocumentsContract.getTreeDocumentId(tree)
                       var found: Uri? = null
                       contentResolver.query(
                           DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId),
-                          arrayOf(
-                              Document.COLUMN_DOCUMENT_ID,
-                              Document.COLUMN_DISPLAY_NAME
-                          ),
+                          arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME),
                           null, null, null
                       )?.use { c ->
                           val idIdx = c.getColumnIndexOrThrow(Document.COLUMN_DOCUMENT_ID)
@@ -587,7 +1002,6 @@ jobs:
                   }
               }
 
-              // Lee el sidecar y devuelve el Locator, o null si no existe / esta corrupto.
               private suspend fun loadSidecar(bookName: String): Locator? {
                   val uri = findSidecarUri(bookName) ?: return null
                   return withContext(Dispatchers.IO) {
@@ -600,9 +1014,8 @@ jobs:
                   }
               }
 
-              // Escribe (o sobrescribe) el sidecar. Crea el archivo si no existe.
               private suspend fun saveSidecar(bookName: String, locator: Locator) {
-                  val tree = sidecarTreeUri ?: return
+                  val tree = libraryTreeUri ?: return
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
                   val json = JSONObject().apply {
                       put("version", 1)
@@ -611,12 +1024,9 @@ jobs:
                       put("updatedAt",
                           SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
                   }.toString(2)
-
                   withContext(Dispatchers.IO) {
                       val treeDocId = DocumentsContract.getTreeDocumentId(tree)
                       val treeDocUri = DocumentsContract.buildDocumentUriUsingTree(tree, treeDocId)
-
-                      // Buscar si ya existe; si no, crearlo.
                       var target = findSidecarUri(bookName)
                       if (target == null) {
                           target = DocumentsContract.createDocument(
@@ -624,7 +1034,6 @@ jobs:
                               "application/json", sidecarName
                           ) ?: return@withContext
                       }
-
                       contentResolver.openOutputStream(target, "wt")?.use { os ->
                           os.write(json.toByteArray(Charsets.UTF_8))
                           os.flush()
@@ -632,7 +1041,6 @@ jobs:
                   }
               }
 
-              // ----- Util: nombre real del archivo a partir de un URI SAF -----
               private fun queryDisplayName(uri: Uri): String? {
                   contentResolver.query(uri, null, null, null, null)?.use { c ->
                       val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -643,7 +1051,7 @@ jobs:
           }
           EOF
 
-          # --- layout/activity_main.xml (placeholder, MainActivity crea vistas por codigo) ---
+          # --- layout/activity_main.xml ---
           cat > app/src/main/res/layout/activity_main.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -679,9 +1087,6 @@ jobs:
           </resources>
           EOF
 
-      # ============================================================
-      # BUILD DEL APK
-      # ============================================================
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
