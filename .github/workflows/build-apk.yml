@@ -115,8 +115,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 15
-                  versionName = "1.6"
+                  versionCode = 16
+                  versionName = "1.7"
               }
           
               buildTypes {
@@ -155,6 +155,9 @@ jobs:
               implementation("org.readium.kotlin-toolkit:readium-shared:3.4.0")
               implementation("org.readium.kotlin-toolkit:readium-streamer:3.4.0")
               implementation("org.readium.kotlin-toolkit:readium-navigator:3.4.0")
+              // Soporte CBR (Comic Book RAR) via junrar
+              implementation("com.github.junrar:junrar:8.1.2")
+              implementation("org.slf4j:slf4j-android:1.7.30")
           }
           EOF
 
@@ -212,6 +215,68 @@ jobs:
           }
           EOF
 
+          cat > app/src/main/java/com/lector/epub/ComicConverter.kt <<'EOF'
+          package com.lector.epub
+          
+          import android.content.Context
+          import android.net.Uri
+          import com.github.junrar.Archive
+          import com.github.junrar.rarfile.FileHeader
+          import java.io.File
+          import java.io.FileOutputStream
+              import java.util.zip.ZipEntry
+              import java.util.zip.ZipOutputStream
+          
+          /**
+           * Convierte archivos CBR (RAR de comics) a CBZ (ZIP de comics) en cache,
+           * para que Readium pueda abrirlos (Readium NO soporta CBR nativamente).
+           *
+           * Estrategia: extrae las imagenes del RAR y las re-comprime como ZIP.
+           * El resultado se guarda en cacheDir y se reutiliza si ya existe.
+           */
+          object ComicConverter {
+          
+              private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp")
+          
+              /** Convierte un CBR a CBZ en cache. Devuelve el File del CBZ. */
+              suspend fun convertCbrToCbz(context: Context, cbrUri: Uri, displayName: String): File = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                  val cbzName = displayName.substringBeforeLast('.') + ".cbz"
+                  val cached = File(context.cacheDir, cbzName)
+                  if (cached.exists() && cached.length() > 0) {
+                      return@withContext cached
+                  }
+          
+                  // Copiar el CBR a un fichero temporal (junrar trabaja mejor con File que con InputStream)
+                  val tempCbr = File.createTempFile("conv_", ".cbr", context.cacheDir)
+                  try {
+                      context.contentResolver.openInputStream(cbrUri)?.use { input ->
+                          tempCbr.outputStream().use { input.copyTo(it) }
+                      } ?: error("No se pudo leer el CBR")
+                      // Abrir con junrar y comprimir imagenes como ZIP
+                      ZipOutputStream(FileOutputStream(cached)).use { zos ->
+                          zos.setLevel(0) // Las imagenes ya están comprimidas; no re-comprimir
+                          Archive(tempCbr).use { archive ->
+                              val imageHeaders = archive.fileHeaders
+                                  .filter { !it.isDirectory }
+                                  .filter { it.fileName.substringAfterLast('.', "").lowercase() in IMAGE_EXTS }
+                                  .sortedBy { it.fileName }
+                              for (header in imageHeaders) {
+                                  zos.putNextEntry(ZipEntry(header.fileName))
+                                  archive.getInputStream(header).use { input ->
+                                      input.copyTo(zos)
+                                  }
+                                  zos.closeEntry()
+                              }
+                          }
+                      }
+                      cached
+                  } finally {
+                      tempCbr.delete()
+                  }
+              }
+          }
+          EOF
+
           cat > app/src/main/java/com/lector/epub/LibraryEntry.kt <<'EOF'
           package com.lector.epub
           
@@ -219,9 +284,16 @@ jobs:
           import android.net.Uri
           
           /**
+           * Tipo de contenido de una biblioteca.
+           *  - EPUB: libros electrónicos (.epub)
+           *  - COMIC: comics (.cbz / .cbr)
+           */
+          enum class LibraryMediaType { EPUB, COMIC }
+          
+          /**
            * Tipo de entrada en la biblioteca.
-           *  - BOOK: archivo .epub individual.
-           *  - COLLECTION: subcarpeta que contiene mas .epub.
+           *  - BOOK: archivo individual (.epub, .cbz o .cbr)
+           *  - COLLECTION: subcarpeta que contiene mas archivos.
            */
           enum class LibraryEntryType { BOOK, COLLECTION }
           
@@ -232,6 +304,8 @@ jobs:
               val documentUri: Uri,
               val type: LibraryEntryType = LibraryEntryType.BOOK,
               val bookCount: Int = 0,
+              /** Solo para BOOK: extension del archivo (epub, cbz, cbr). */
+              val extension: String = "epub",
           )
           EOF
 
@@ -478,11 +552,13 @@ jobs:
           import org.json.JSONObject
           import org.readium.r2.navigator.epub.EpubNavigatorFactory
           import org.readium.r2.navigator.epub.EpubNavigatorFragment
+          import org.readium.r2.navigator.image.ImageNavigatorFragment
           import org.readium.r2.navigator.preferences.FontFamily
           import org.readium.r2.navigator.preferences.Theme
           import org.readium.r2.shared.ExperimentalReadiumApi
           import org.readium.r2.shared.publication.Link
           import org.readium.r2.shared.publication.Locator
+          import org.readium.r2.shared.publication.Publication
           import org.readium.r2.shared.publication.services.cover
           import java.io.File
           import java.text.SimpleDateFormat
@@ -520,12 +596,21 @@ jobs:
               private lateinit var libraryRecycler: RecyclerView
               private lateinit var btnBackFolder: ImageButton
               private lateinit var btnRefreshLibrary: ImageButton
+              // Selector dual: Libros / Comics
+              private lateinit var btnMediaEpub: ImageButton
+              private lateinit var btnMediaComic: ImageButton
+              /** Tipo de biblioteca actualmente activa en la pantalla principal. */
+              private var currentMedia: LibraryMediaType = LibraryMediaType.EPUB
+              /** Carpeta actualmente abierta en la biblioteca activa. */
               private var currentFolderUri: Uri? = null
+              /** URI del tree raiz de cada biblioteca. */
+              private var libraryTreeUri: Uri? = null
+              private var comicsTreeUri: Uri? = null
               private val libraryAdapter = LibraryAdapter { entry ->
                   if (entry.type == LibraryEntryType.COLLECTION) {
                       lifecycleScope.launch { enterFolder(entry.documentUri, entry.title) }
                   } else {
-                      lifecycleScope.launch { openEpubFromLibrary(entry) }
+                      lifecycleScope.launch { openFromLibrary(entry) }
                   }
               }
           
@@ -553,7 +638,9 @@ jobs:
               private var settingsVisible = false
           
               // ----- Estado -----
-              private var navigator: EpubNavigatorFragment? = null
+              // navigator puede ser EpubNavigatorFragment o ImageNavigatorFragment.
+              // Ambos implementan VisualNavigator y Navigator (con go, currentLocator, etc.).
+              private var navigator: Any? = null
               private var currentBookName: String? = null
               private var currentBookFolderUri: Uri? = null
               private var sidecarJob: Job? = null
@@ -563,7 +650,6 @@ jobs:
               private var chapters: List<Link> = emptyList()
               private var tableOfContents: List<Link> = emptyList()
               private var chapterIndex: Int = -1
-              private var libraryTreeUri: Uri? = null
           
               private val openEpubLauncher = registerForActivityResult(
                   ActivityResultContracts.OpenDocument()
@@ -580,8 +666,15 @@ jobs:
                           Intent.FLAG_GRANT_READ_URI_PERMISSION or
                               Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                       )
-                      prefs().edit().putString("library_tree_uri", uri.toString()).apply()
-                      libraryTreeUri = uri
+                      val prefsKey = when (currentMedia) {
+                          LibraryMediaType.EPUB -> "library_tree_uri"
+                          LibraryMediaType.COMIC -> "comics_tree_uri"
+                      }
+                      prefs().edit().putString(prefsKey, uri.toString()).apply()
+                      when (currentMedia) {
+                          LibraryMediaType.EPUB -> libraryTreeUri = uri
+                          LibraryMediaType.COMIC -> comicsTreeUri = uri
+                      }
                       currentFolderUri = null
                       refreshLibraryButtons()
                       applyGlobalTheme()
@@ -593,6 +686,9 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   libraryTreeUri = prefs().getString("library_tree_uri", null)?.let {
+                      runCatching { Uri.parse(it) }.getOrNull()
+                  }
+                  comicsTreeUri = prefs().getString("comics_tree_uri", null)?.let {
                       runCatching { Uri.parse(it) }.getOrNull()
                   }
                   buildUI()
@@ -626,6 +722,21 @@ jobs:
                       )
                   }
                   headerRow.addView(headerTitle)
+                  // Selector dual de bibliotecas: icono libro + icono comic.
+                  btnMediaEpub = ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_media_book)
+                      background = null
+                      setPadding(dp(10), dp(10), dp(10), dp(10))
+                      setOnClickListener { switchMedia(LibraryMediaType.EPUB) }
+                  }
+                  headerRow.addView(btnMediaEpub)
+                  btnMediaComic = ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_media_comic)
+                      background = null
+                      setPadding(dp(10), dp(10), dp(10), dp(10))
+                      setOnClickListener { switchMedia(LibraryMediaType.COMIC) }
+                  }
+                  headerRow.addView(btnMediaComic)
                   btnRefreshLibrary = ImageButton(this).apply {
                       setImageResource(R.drawable.ic_refresh)
                       background = null
@@ -943,11 +1054,21 @@ jobs:
                   settingsPanel.addView(fontSizeRow)
           
                   settingsPanel.addView(sectionLabel("BIBLIOTECA"))
-                  otherChips.add(wideChip("Cambiar carpeta biblioteca") { pickLibraryTreeLauncher.launch(null) }
-                      .also(settingsPanel::addView))
-                  otherChips.add(wideChip("Abrir EPUB externo") {
+                  otherChips.add(wideChip("Cambiar carpeta de libros") {
+                      currentMedia = LibraryMediaType.EPUB
+                      updateMediaToggle()
+                      pickLibraryTreeLauncher.launch(null)
+                  }.also(settingsPanel::addView))
+                  otherChips.add(wideChip("Cambiar carpeta de comics") {
+                      currentMedia = LibraryMediaType.COMIC
+                      updateMediaToggle()
+                      pickLibraryTreeLauncher.launch(null)
+                  }.also(settingsPanel::addView))
+                  otherChips.add(wideChip("Abrir archivo externo") {
                       openEpubLauncher.launch(arrayOf(
-                          "application/epub+zip", "application/octet-stream"
+                          "application/epub+zip", "application/octet-stream",
+                          "application/vnd.comicbook+zip", "application/vnd.comicbook-rar",
+                          "application/x-cbz", "application/x-cbr"
                       ))
                   }.also(settingsPanel::addView))
           
@@ -1009,24 +1130,79 @@ jobs:
                   otherChips.forEach(::paintChip)
                   brightnessValue.setTextColor(txt)
                   fontSizeValue.setTextColor(txt)
+                  // Actualiza el color de los iconos de selección de biblioteca.
+                  updateMediaToggle()
               }
           
               private fun refreshLibraryButtons() {
-                  val hasLibrary = libraryTreeUri != null
+                  val hasLibrary = activeTreeUri() != null
                   btnPickLibrary.visibility = if (hasLibrary) View.GONE else View.VISIBLE
                   btnOpenExternal.visibility = if (hasLibrary) View.GONE else View.VISIBLE
-                  // El botón de refrescar solo aparece cuando hay biblioteca elegida.
                   btnRefreshLibrary.visibility = if (hasLibrary) View.VISIBLE else View.GONE
+              }
+          
+              /** URI raiz de la biblioteca actualmente activa. */
+              private fun activeTreeUri(): Uri? = when (currentMedia) {
+                  LibraryMediaType.EPUB -> libraryTreeUri
+                  LibraryMediaType.COMIC -> comicsTreeUri
+              }
+          
+              /** Cambia entre biblioteca de libros y comics. */
+              private fun switchMedia(media: LibraryMediaType) {
+                  if (currentMedia == media) return
+                  currentMedia = media
+                  currentFolderUri = null
+                  updateMediaToggle()
+                  refreshLibraryButtons()
+                  headerSub.text = when (media) {
+                      LibraryMediaType.EPUB -> "Tu biblioteca de libros"
+                      LibraryMediaType.COMIC -> "Tu biblioteca de comics"
+                  }
+                  lifecycleScope.launch { reloadLibrary() }
+              }
+          
+              /** Marca visualmente qué botón está activo (libro/comic). */
+              private fun updateMediaToggle() {
+                  val active = ACCENT_DARK
+                  val inactive = if (isDark) 0xFF666666.toInt() else 0xFF999999.toInt()
+                  btnMediaEpub.setColorFilter(
+                      if (currentMedia == LibraryMediaType.EPUB) active else inactive
+                  )
+                  btnMediaComic.setColorFilter(
+                      if (currentMedia == LibraryMediaType.COMIC) active else inactive
+                  )
               }
           
               // ============== LIBRARY ==============
           
               private suspend fun reloadLibrary() {
-                  val tree = libraryTreeUri ?: return
+                  val tree = activeTreeUri() ?: run {
+                      libraryAdapter.submit(emptyList())
+                      refreshLibraryButtons()
+                      updateFolderNav()
+                      headerSub.text = when (currentMedia) {
+                          LibraryMediaType.EPUB -> "Elige una carpeta de libros"
+                          LibraryMediaType.COMIC -> "Elige una carpeta de comics"
+                      }
+                      libraryHint.text = ""
+                      return
+                  }
                   refreshLibraryButtons()
                   updateFolderNav()
                   libraryHint.text = "Cargando biblioteca..."
                   val folderUri = currentFolderUri ?: tree
+                  val mediaExts = when (currentMedia) {
+                      LibraryMediaType.EPUB -> setOf("epub")
+                      LibraryMediaType.COMIC -> setOf("cbz", "cbr")
+                  }
+                  val mediaMimes = when (currentMedia) {
+                      LibraryMediaType.EPUB -> setOf("application/epub+zip")
+                      LibraryMediaType.COMIC -> setOf(
+                          "application/vnd.comicbook+zip", "application/vnd.comicbook-rar",
+                          "application/x-cbz", "application/x-cbr",
+                          "application/octet-stream"
+                      )
+                  }
                   val entries = withContext(Dispatchers.IO) {
                       val folderDocId = if (currentFolderUri != null)
                           DocumentsContract.getDocumentId(folderUri)
@@ -1050,11 +1226,11 @@ jobs:
                               val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
           
                               val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
-                              val isEpub = mime == "application/epub+zip" ||
-                                  name.lowercase().endsWith(".epub")
+                              val ext = name.substringAfterLast('.', "").lowercase()
+                              val isMedia = mime in mediaMimes || ext in mediaExts
           
                               if (isDir) {
-                                  val count = countEpubsIn(folderUri = docUri, tree = tree)
+                                  val count = countMediaIn(folderUri = docUri, tree = tree, exts = mediaExts, mimes = mediaMimes)
                                   if (count > 0) {
                                       folders.add(LibraryEntry(
                                           fileName = name,
@@ -1065,13 +1241,14 @@ jobs:
                                           bookCount = count,
                                       ))
                                   }
-                              } else if (isEpub) {
+                              } else if (isMedia) {
                                   val meta = readMetadata(docUri, name)
                                   books.add(LibraryEntry(
                                       fileName = name,
                                       title = meta.first,
                                       cover = meta.second,
                                       documentUri = docUri,
+                                      extension = ext,
                                   ))
                               }
                           }
@@ -1082,15 +1259,24 @@ jobs:
                   libraryAdapter.submit(entries)
                   val nBooks = entries.count { it.type == LibraryEntryType.BOOK }
                   val nFolders = entries.count { it.type == LibraryEntryType.COLLECTION }
+                  val noun = when (currentMedia) {
+                      LibraryMediaType.EPUB -> "libros"
+                      LibraryMediaType.COMIC -> "comics"
+                  }
                   headerSub.text = when {
-                      nFolders > 0 && nBooks > 0 -> "$nFolders colecciones, $nBooks libros"
+                      nFolders > 0 && nBooks > 0 -> "$nFolders colecciones, $nBooks $noun"
                       nFolders > 0 -> "$nFolders colecciones"
-                      else -> "$nBooks libros en tu biblioteca"
+                      else -> "$nBooks $noun en tu biblioteca"
                   }
                   libraryHint.text = if (entries.isEmpty()) "Carpeta vacía" else ""
               }
           
-              private suspend fun countEpubsIn(folderUri: Uri, tree: Uri): Int = withContext(Dispatchers.IO) {
+              private suspend fun countMediaIn(
+                  folderUri: Uri,
+                  tree: Uri,
+                  exts: Set<String>,
+                  mimes: Set<String>,
+              ): Int = withContext(Dispatchers.IO) {
                   try {
                       val folderDocId = DocumentsContract.getDocumentId(folderUri)
                       val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, folderDocId)
@@ -1104,8 +1290,8 @@ jobs:
                           while (c.moveToNext()) {
                               val name = c.getString(nameIdx) ?: continue
                               val mime = c.getString(mimeIdx) ?: ""
-                              if (mime == "application/epub+zip" ||
-                                  name.lowercase().endsWith(".epub")) count++
+                              val ext = name.substringAfterLast('.', "").lowercase()
+                              if (mime in mimes || ext in exts) count++
                           }
                       }
                       count
@@ -1159,27 +1345,41 @@ jobs:
                   }
               }
           
-              private suspend fun openEpubFromLibrary(entry: LibraryEntry) {
-                  currentBookFolderUri = currentFolderUri ?: libraryTreeUri
-                  openEpubInternal(uri = entry.documentUri, displayName = entry.fileName, title = entry.title)
+              private suspend fun openFromLibrary(entry: LibraryEntry) {
+                  currentBookFolderUri = currentFolderUri ?: activeTreeUri()
+                  openInternal(
+                      uri = entry.documentUri,
+                      displayName = entry.fileName,
+                      title = entry.title,
+                      extension = entry.extension,
+                  )
               }
           
               private suspend fun openEpubExternal(uri: Uri) {
-                  currentBookFolderUri = currentFolderUri ?: libraryTreeUri
+                  currentBookFolderUri = currentFolderUri ?: activeTreeUri()
                   val name = queryDisplayName(uri) ?: "libro.epub"
-                  openEpubInternal(uri = uri, displayName = name, title = name.substringBeforeLast('.'))
+                  val ext = name.substringAfterLast('.', "").lowercase()
+                  openInternal(uri = uri, displayName = name, title = name.substringBeforeLast('.'), extension = ext)
               }
           
               // ============== READER ==============
           
               @OptIn(ExperimentalReadiumApi::class)
-              private suspend fun openEpubInternal(uri: Uri, displayName: String, title: String) {
+              private suspend fun openInternal(uri: Uri, displayName: String, title: String, extension: String) {
                   try {
-                      val cached = File(cacheDir, displayName)
-                      withContext(Dispatchers.IO) {
-                          contentResolver.openInputStream(uri)?.use { input ->
-                              cached.outputStream().use { input.copyTo(it) }
-                          } ?: error("No se pudo leer el archivo seleccionado")
+                      // Para CBR: convertir a CBZ en cache primero (Readium no soporta CBR).
+                      val cached: File
+                      val isComic = extension == "cbz" || extension == "cbr"
+                      if (extension == "cbr") {
+                          Toast.makeText(this, "Convirtiendo CBR a CBZ...", Toast.LENGTH_SHORT).show()
+                          cached = ComicConverter.convertCbrToCbz(this, uri, displayName)
+                      } else {
+                          cached = File(cacheDir, displayName)
+                          withContext(Dispatchers.IO) {
+                              contentResolver.openInputStream(uri)?.use { input ->
+                                  cached.outputStream().use { input.copyTo(it) }
+                              } ?: error("No se pudo leer el archivo seleccionado")
+                          }
                       }
                       currentBookName = displayName
           
@@ -1193,7 +1393,7 @@ jobs:
                           app.publicationOpener.open(asset, allowUserInteraction = true)
                       }
                       val publication = publicationResult.getOrNull()
-                          ?: error("Readium no pudo abrir el EPUB: " +
+                          ?: error("Readium no pudo abrir el archivo: " +
                               "${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
           
                       chapters = publication.readingOrder
@@ -1206,37 +1406,66 @@ jobs:
                       readerRoot.visibility = View.VISIBLE
                       enterImmersive()
           
-                      val prefs = currentEpubPreferences()
-                      val factory = EpubNavigatorFactory(publication = publication)
-                      supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
-                          initialLocator = initialLocator,
-                          initialPreferences = prefs,
-                          paginationListener = object : EpubNavigatorFragment.PaginationListener {
-                              override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
-                                  lastPageIndex = pageIndex
-                                  lastTotalPages = totalPages
+                      if (isComic) {
+                          // COMIC: ImageNavigatorFragment (sin preferencias, sin PaginationListener).
+                          supportFragmentManager.fragmentFactory = ImageNavigatorFragment.createFactory(
+                              publication = publication,
+                              initialLocator = initialLocator,
+                              listener = null,
+                          )
+                          val frag = supportFragmentManager.fragmentFactory
+                              .instantiate(classLoader, ImageNavigatorFragment::class.java.name)
+                              as ImageNavigatorFragment
+                          supportFragmentManager.beginTransaction()
+                              .replace(navContainer.id, frag, "image_nav")
+                              .commitNowAllowingStateLoss()
+                          navigator = frag
+                          topBarTitle.text = title
+                          lifecycleScope.launch {
+                              frag.currentLocator.collect { locator ->
+                                  lastLocator = locator
+                                  saveLocator(displayName, locator)
+                                  sidecarJob?.cancel()
+                                  sidecarJob = appScope.launch {
+                                      delay(2000)
+                                      saveSidecar(displayName, locator)
+                                  }
+                                  updateProgress(locator)
                               }
-                          },
-                      )
-                      val frag = supportFragmentManager.fragmentFactory
-                          .instantiate(classLoader, EpubNavigatorFragment::class.java.name)
-                          as EpubNavigatorFragment
-                      supportFragmentManager.beginTransaction()
-                          .replace(navContainer.id, frag, "epub_nav")
-                          .commitNowAllowingStateLoss()
-                      navigator = frag
-                      topBarTitle.text = title
-          
-                      lifecycleScope.launch {
-                          frag.currentLocator.collect { locator ->
-                              lastLocator = locator
-                              saveLocator(displayName, locator)
-                              sidecarJob?.cancel()
-                              sidecarJob = appScope.launch {
-                                  delay(2000)
-                                  saveSidecar(displayName, locator)
+                          }
+                      } else {
+                          // EPUB: EpubNavigatorFactory con preferencias y PaginationListener.
+                          val prefs = currentEpubPreferences()
+                          val factory = EpubNavigatorFactory(publication = publication)
+                          supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
+                              initialLocator = initialLocator,
+                              initialPreferences = prefs,
+                              paginationListener = object : EpubNavigatorFragment.PaginationListener {
+                                  override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
+                                      lastPageIndex = pageIndex
+                                      lastTotalPages = totalPages
+                                  }
+                              },
+                          )
+                          val frag = supportFragmentManager.fragmentFactory
+                              .instantiate(classLoader, EpubNavigatorFragment::class.java.name)
+                              as EpubNavigatorFragment
+                          supportFragmentManager.beginTransaction()
+                              .replace(navContainer.id, frag, "epub_nav")
+                              .commitNowAllowingStateLoss()
+                          navigator = frag
+                          topBarTitle.text = title
+                          lifecycleScope.launch {
+                              frag.currentLocator.collect { locator ->
+                                  lastLocator = locator
+                                  saveLocator(displayName, locator)
+                                  sidecarJob?.cancel()
+                                  sidecarJob = appScope.launch {
+                                      delay(2000)
+                                      saveSidecar(displayName, locator)
+                                  }
+                                  updateProgress(locator)
                               }
-                              updateProgress(locator)
                           }
                       }
                   } catch (e: Throwable) {
@@ -1274,7 +1503,7 @@ jobs:
               }
           
               private fun goToChapter(delta: Int) {
-                  val nav = navigator ?: return
+                  val nav = navigator as? org.readium.r2.navigator.Navigator ?: return
                   if (chapters.isEmpty()) return
                   val cur = if (chapterIndex >= 0) chapterIndex else 0
                   val idx = (cur + delta).coerceIn(0, chapters.lastIndex)
@@ -1302,7 +1531,7 @@ jobs:
               }
           
               private fun showChapterList() {
-                  val nav = navigator ?: return
+                  val nav = navigator as? org.readium.r2.navigator.Navigator ?: return
                   if (tableOfContents.isEmpty() && chapters.isEmpty()) {
                       Toast.makeText(this, "Sin indice de capitulos", Toast.LENGTH_SHORT).show()
                       return
@@ -1366,8 +1595,16 @@ jobs:
                   chapterIndex = -1
                   navigator?.let {
                       try {
-                          supportFragmentManager.beginTransaction().remove(it)
-                              .commitNowAllowingStateLoss()
+                          (it as? android.app.Fragment)?.let { frag ->
+                              fragmentManager.beginTransaction().remove(frag)
+                                  .commitNowAllowingStateLoss()
+                          }
+                      } catch (_: Throwable) {}
+                      try {
+                          (it as? androidx.fragment.app.Fragment)?.let { frag ->
+                              supportFragmentManager.beginTransaction().remove(frag)
+                                  .commitNowAllowingStateLoss()
+                          }
                       } catch (_: Throwable) {}
                   }
                   navigator = null
@@ -1636,6 +1873,24 @@ jobs:
               android:viewportWidth="24" android:viewportHeight="24">
               <path android:fillColor="#FF424242"
                   android:pathData="M17.65,6.35C16.2,4.9 14.21,4 12,4c-4.42,0 -7.99,3.58 -7.99,8s3.57,8 7.99,8c3.73,0 6.84,-2.55 7.73,-6h-2.08c-0.82,2.33 -3.04,4 -5.65,4 -3.31,0 -6,-2.69 -6,-6s2.69,-6 6,-6c1.66,0 3.14,0.69 4.22,1.78L13,11h7V4l-2.35,2.35z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_media_book.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FF424242"
+                  android:pathData="M21,5c-1.11,-0.35 -2.33,-0.5 -3.5,-0.5 -1.95,0 -4.05,0.4 -5.5,1.5 -1.45,-1.1 -3.55,-1.5 -5.5,-1.5S2.45,4.9 1,6v14.65c0,0.25 0.25,0.5 0.5,0.5 0.1,0 0.15,-0.05 0.25,-0.05C3.1,20.45 5.05,20 6.5,20c1.95,0 4.05,0.4 5.5,1.5 1.35,-0.85 3.8,-1.5 5.5,-1.5 1.65,0 3.35,0.3 4.75,1.05 0.1,0.05 0.15,0.05 0.25,0.05 0.25,0 0.5,-0.25 0.5,-0.5V6c-0.6,-0.45 -1.25,-0.75 -2,-1zM21,18.5c-1.1,-0.35 -2.3,-0.5 -3.5,-0.5 -1.7,0 -4.15,0.65 -5.5,1.5V8c1.35,-0.85 3.8,-1.5 5.5,-1.5 1.2,0 2.4,0.15 3.5,0.5V18.5z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_media_comic.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FF424242"
+                  android:pathData="M21.99,4c0,-1.1 -0.89,-2 -1.99,-2L4,2c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h10v2c0,0.55 0.45,1 1,1h1c0.55,0 1,-0.45 1,-1v-2h3c1.1,0 2,-0.9 2,-2V4zM18,8l-3,3.5L12,8l-3,4 -3,-4 -2,2.5V4h16v6.5L18,8z"/>
           </vector>
           EOF
 
