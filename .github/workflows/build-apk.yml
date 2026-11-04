@@ -33,6 +33,15 @@ jobs:
             "platforms;android-37" \
             "build-tools;37.0.0" > /dev/null || true
 
+      - name: Restaurar keystore de firma (fijo)
+        run: |
+          mkdir -p app
+          echo "$KEYSTORE_BASE64" | base64 -d > app/nulec.keystore
+          ls -la app/nulec.keystore
+        env:
+          KEYSTORE_BASE64: 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
+
+
       - name: Escribir archivos del proyecto
         run: |
           # --- settings.gradle.kts ---
@@ -87,17 +96,27 @@ jobs:
               namespace = "com.lector.epub"
               compileSdk = 37
 
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("nulec.keystore")
+                      storePassword = "nulec2025"
+                      keyAlias = "nulec"
+                      keyPassword = "nulec2025"
+                  }
+              }
+
               defaultConfig {
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 8
-                  versionName = "1.0"
+                  versionCode = 9
+                  versionName = "1.1"
               }
 
               buildTypes {
                   debug {
                       isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("release")
                   }
               }
 
@@ -657,7 +676,7 @@ jobs:
                   fun chip(label: String, onClick: (View) -> Unit): Button {
                       val b = Button(this).apply {
                           text = label
-                          allCaps = false
+                          setAllCaps(false)
                           textSize = 13f
                           setOnClickListener(onClick)
                           layoutParams = LinearLayout.LayoutParams(
