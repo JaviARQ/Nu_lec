@@ -109,8 +109,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 9
-                  versionName = "1.1"
+                  versionCode = 12
+                  versionName = "1.4"
               }
 
               buildTypes {
@@ -156,7 +156,14 @@ jobs:
           mkdir -p app/src/main/java/com/lector/epub
           mkdir -p app/src/main/res/layout
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/values-night
           mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -164,7 +171,8 @@ jobs:
               <application
                   android:name=".LectorApp"
                   android:allowBackup="true"
-                  android:icon="@drawable/ic_launcher"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:label="@string/app_name"
                   android:supportsRtl="true"
                   android:theme="@style/Theme.NuLec">
@@ -219,11 +227,21 @@ jobs:
           import android.graphics.Bitmap
           import android.net.Uri
 
+          /**
+           * Tipo de entrada en la biblioteca.
+           *  - BOOK: archivo .epub individual.
+           *  - COLLECTION: subcarpeta que contiene mas .epub.
+           */
+          enum class LibraryEntryType { BOOK, COLLECTION }
+
           data class LibraryEntry(
               val fileName: String,
               val title: String,
               val cover: Bitmap?,
               val documentUri: Uri,
+              val type: LibraryEntryType = LibraryEntryType.BOOK,
+              /** Para COLLECTION: nº de libros que contiene. */
+              val bookCount: Int = 0,
           )
           EOF
 
@@ -231,8 +249,14 @@ jobs:
           cat > app/src/main/java/com/lector/epub/LibraryAdapter.kt <<'EOF'
           package com.lector.epub
 
+          import android.graphics.Canvas
+          import android.graphics.Color
           import android.graphics.Outline
+          import android.graphics.Paint
+          import android.graphics.Rect
+          import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
+          import android.text.TextUtils
           import android.view.Gravity
           import android.view.View
           import android.view.ViewGroup
@@ -243,15 +267,15 @@ jobs:
           import androidx.recyclerview.widget.RecyclerView
 
           /**
-           * Biblioteca en rejilla: tarjetas redondeadas con sombra, portada con
-           * esquinas redondeadas y titulo centrado. Soporta modo claro/oscuro.
+           * Biblioteca en rejilla: tarjetas con esquinas redondeadas, sombra suave,
+           * portada con placeholder generado cuando el EPUB no trae portada.
+           * Soporta tipo BOOK (libro individual) y COLLECTION (subcarpeta).
            */
           class LibraryAdapter(
               private val items: MutableList<LibraryEntry> = mutableListOf(),
               private val onClick: (LibraryEntry) -> Unit,
           ) : RecyclerView.Adapter<LibraryAdapter.VH>() {
 
-              /** Modo oscuro: repinta las tarjetas al cambiarlo. */
               var isDark: Boolean = false
                   set(value) {
                       field = value
@@ -265,9 +289,9 @@ jobs:
               }
 
               inner class VH(val root: LinearLayout) : RecyclerView.ViewHolder(root) {
-                  val card: LinearLayout = root as LinearLayout
                   val cover: ImageView = (root.getChildAt(0) as ImageView)
                   val title: TextView = (root.getChildAt(1) as TextView)
+                  val subtitle: TextView = (root.getChildAt(2) as TextView)
               }
 
               override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -278,59 +302,155 @@ jobs:
                   val root = LinearLayout(ctx).apply {
                       orientation = LinearLayout.VERTICAL
                       gravity = Gravity.CENTER_HORIZONTAL
-                      layoutParams = ViewGroup.LayoutParams(dp(120), ViewGroup.LayoutParams.WRAP_CONTENT)
-                      setPadding(dp(6), dp(6), dp(6), dp(10))
+                      layoutParams = ViewGroup.LayoutParams(dp(112), ViewGroup.LayoutParams.WRAP_CONTENT)
+                      setPadding(dp(6), dp(8), dp(6), dp(12))
                       clipToOutline = true
-                      elevation = dp(4).toFloat()
+                      elevation = dp(3).toFloat()
                       outlineProvider = object : ViewOutlineProvider() {
                           override fun getOutline(view: View, outline: Outline) {
-                              outline.setRoundRect(
-                                  0, 0, view.width, view.height, 14 * density
-                              )
+                              outline.setRoundRect(0, 0, view.width, view.height, 18 * density)
                           }
                       }
                   }
                   val cover = ImageView(ctx).apply {
-                      layoutParams = LinearLayout.LayoutParams(dp(104), dp(150))
+                      layoutParams = LinearLayout.LayoutParams(dp(100), dp(150))
                       scaleType = ImageView.ScaleType.CENTER_CROP
                       clipToOutline = true
                       outlineProvider = object : ViewOutlineProvider() {
                           override fun getOutline(view: View, outline: Outline) {
-                              outline.setRoundRect(
-                                  0, 0, view.width, view.height, 10 * density
-                              )
+                              outline.setRoundRect(0, 0, view.width, view.height, 12 * density)
                           }
                       }
                   }
                   val title = TextView(ctx).apply {
-                      layoutParams = LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT)
+                      layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT)
                       maxLines = 2
-                      ellipsize = android.text.TextUtils.TruncateAt.END
-                      textSize = 12f
+                      ellipsize = TextUtils.TruncateAt.END
+                      textSize = 12.5f
+                      setTypeface(null, Typeface.MEDIUM)
                       gravity = Gravity.CENTER_HORIZONTAL
-                      setPadding(0, dp(8), 0, 0)
+                      setPadding(0, dp(10), 0, 0)
+                      setLineSpacing(dp(2).toFloat(), 1f)
+                  }
+                  val subtitle = TextView(ctx).apply {
+                      layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT)
+                      maxLines = 1
+                      ellipsize = TextUtils.TruncateAt.END
+                      textSize = 10f
+                      setTypeface(null, Typeface.NORMAL)
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      setPadding(0, dp(2), 0, 0)
+                      visibility = View.GONE
                   }
                   root.addView(cover)
                   root.addView(title)
+                  root.addView(subtitle)
                   return VH(root)
               }
 
               override fun onBindViewHolder(holder: VH, position: Int) {
                   val e = items[position]
-                  holder.cover.setImageBitmap(e.cover)
-                  holder.title.text = e.title
-                  holder.title.setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                  val density = holder.root.resources.displayMetrics.density
+
+                  if (e.type == LibraryEntryType.COLLECTION) {
+                      // Carpetas: icono de carpeta dibujado + contador de libros.
+                      holder.cover.setImageBitmap(folderPlaceholder(e.title, e.bookCount, isDark))
+                      holder.title.text = e.title
+                      holder.title.setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                      holder.subtitle.text = "${e.bookCount} libros"
+                      holder.subtitle.setTextColor(if (isDark) 0xFF8AB4F8.toInt() else 0xFF2563EB.toInt())
+                      holder.subtitle.visibility = View.VISIBLE
+                  } else {
+                      // Libro individual.
+                      if (e.cover != null) {
+                          holder.cover.setImageBitmap(e.cover)
+                      } else {
+                          holder.cover.setImageBitmap(placeholderFor(e.title, isDark))
+                      }
+                      holder.title.text = e.title
+                      holder.title.setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                      holder.subtitle.visibility = View.GONE
+                  }
+
                   val cardBg = GradientDrawable().apply {
-                      cornerRadius = 14 * holder.card.resources.displayMetrics.density
-                      setColor(if (isDark) 0xFF1E1E1E.toInt() else 0xFFFFFFFF.toInt())
+                      cornerRadius = 18 * density
+                      setColor(if (isDark) 0xFF1F1F1F.toInt() else 0xFFFFFFFF.toInt())
                   }
-                  holder.card.background = cardBg
-                  if (e.cover == null) {
-                      holder.cover.setBackgroundColor(if (isDark) 0xFF2A2A2A.toInt() else 0xFFE8E4DC.toInt())
-                  }
-                  // Capturar la entrada directamente (evita bugs de posicion).
-                  holder.card.setOnClickListener { onClick(e) }
+                  holder.root.background = cardBg
+                  holder.root.setOnClickListener { onClick(e) }
               }
+
+              /** Placeholder de carpeta: fondo azul con icono de carpeta y nombre. */
+              private fun folderPlaceholder(name: String, count: Int, dark: Boolean): android.graphics.Bitmap {
+                  val w = 200; val h = 300
+                  val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                  val canvas = Canvas(bmp)
+                  val bgPaint = Paint().apply {
+                      isAntiAlias = true
+                      color = if (dark) 0xFF1E2A3A.toInt() else 0xFFE3EDF7.toInt()
+                  }
+                  canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), bgPaint)
+
+                  // Icono de carpeta centrado (forma simple).
+                  val folderPaint = Paint().apply {
+                      isAntiAlias = true
+                      color = if (dark) 0xFF8AB4F8.toInt() else 0xFF2563EB.toInt()
+                  }
+                  // Cuerpo de la carpeta
+                  val rect = android.graphics.RectF(40f, 110f, 160f, 200f)
+                  canvas.drawRoundRect(rect, 8f, 8f, folderPaint)
+                  // Pestaña superior
+                  val tab = android.graphics.RectF(40f, 90f, 90f, 115f)
+                  canvas.drawRoundRect(tab, 6f, 6f, folderPaint)
+
+                  // Texto del contador
+                  val tp = Paint().apply {
+                      isAntiAlias = true
+                      color = Color.WHITE
+                      textAlign = Paint.Align.CENTER
+                      textSize = 36f
+                      typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                  }
+                  canvas.drawText("$count", w / 2f, 170f, tp)
+                  return bmp
+              }
+
+              /** Placeholder dibujado: iniciales sobre gradiente de color. */
+              private fun placeholderFor(title: String, dark: Boolean): android.graphics.Bitmap {
+                  val w = 200; val h = 300
+                  val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                  val canvas = Canvas(bmp)
+                  val hue = (title.hashCode().absoluteValue() % 360).toFloat()
+                  val hsv1 = floatArrayOf(hue, 0.45f, if (dark) 0.30f else 0.85f)
+                  val hsv2 = floatArrayOf((hue + 40) % 360, 0.50f, if (dark) 0.20f else 0.70f)
+                  val paint = Paint().apply {
+                      isAntiAlias = true
+                      shader = android.graphics.LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
+                          intArrayOf(Color.HSVToColor(hsv1), Color.HSVToColor(hsv2)),
+                          null, android.graphics.Shader.TileMode.CLAMP)
+                  }
+                  canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+
+                  val initials = title.split(" ", "_", "-")
+                      .filter { it.isNotBlank() }
+                      .take(2)
+                      .joinToString("") { it.first().uppercaseChar().toString() }
+                      .ifEmpty { "?" }
+                  val tp = Paint().apply {
+                      isAntiAlias = true
+                      color = Color.WHITE
+                      textAlign = Paint.Align.CENTER
+                      textSize = 72f
+                      typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                      setShadowLayer(8f, 0f, 2f, 0x44000000)
+                  }
+                  val rect = Rect()
+                  tp.getTextBounds(initials, 0, initials.length, rect)
+                  canvas.drawText(initials, w / 2f, h / 2f - rect.exactCenterY(), tp)
+                  return bmp
+              }
+
+              private fun Int.absoluteValue(): Int = if (this < 0) -this else this
 
               override fun getItemCount(): Int = items.size
           }
@@ -344,6 +464,7 @@ jobs:
           import android.content.res.Configuration
           import android.graphics.Bitmap
           import android.graphics.Color
+          import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
           import android.net.Uri
           import android.os.Build
@@ -365,6 +486,7 @@ jobs:
           import android.widget.TextView
           import android.widget.Toast
           import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AlertDialog
           import androidx.appcompat.app.AppCompatActivity
           import androidx.lifecycle.lifecycleScope
           import androidx.recyclerview.widget.GridLayoutManager
@@ -395,6 +517,7 @@ jobs:
            *
            * LIBRARY: rejilla de libros (portada + titulo) con tema claro/oscuro.
            *   Sin botones cuando ya hay biblioteca elegida (viven en Ajustes).
+           *   La status bar SIEMPRE visible en biblioteca.
            * READER: pantalla completa inmersiva. Tap centro alterna overlays:
            *   arriba: [icono atras] titulo [icono ajustes]
            *   abajo:  [icono cap<] progreso global del libro [icono cap>] + capitulo.
@@ -406,6 +529,10 @@ jobs:
               private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
               private val density get() = resources.displayMetrics.density
               private fun dp(v: Int) = (v * density).toInt()
+
+              // Paleta
+              private val ACCENT = 0xFF2563EB.toInt()
+              private val ACCENT_DARK = 0xFF3B82F6.toInt()
 
               // ----- Tema -----
               private val isDark: Boolean
@@ -424,8 +551,19 @@ jobs:
               private lateinit var btnPickLibrary: Button
               private lateinit var btnOpenExternal: Button
               private lateinit var libraryRecycler: RecyclerView
+              private lateinit var btnBackFolder: ImageButton
+              /**
+               * URI del documento de la carpeta actualmente abierta.
+               * Si es null, equivale a la carpeta raiz (libraryTreeUri).
+               * Se almacena el documentUri (no el treeUri) para poder listar hijos.
+               */
+              private var currentFolderUri: Uri? = null
               private val libraryAdapter = LibraryAdapter { entry ->
-                  lifecycleScope.launch { openEpubFromLibrary(entry) }
+                  if (entry.type == LibraryEntryType.COLLECTION) {
+                      lifecycleScope.launch { enterFolder(entry.documentUri, entry.title) }
+                  } else {
+                      lifecycleScope.launch { openEpubFromLibrary(entry) }
+                  }
               }
 
               // ----- Vistas: READER -----
@@ -437,6 +575,8 @@ jobs:
               private lateinit var progressText: TextView
               private lateinit var progressBar: ProgressBar
               private lateinit var chapterText: TextView
+              private lateinit var btnPrevChapter: ImageButton
+              private lateinit var btnNextChapter: ImageButton
 
               // ----- Vistas: PANEL AJUSTES -----
               private lateinit var settingsPanel: LinearLayout
@@ -452,11 +592,16 @@ jobs:
               // ----- Estado -----
               private var navigator: EpubNavigatorFragment? = null
               private var currentBookName: String? = null
+              /** Carpeta donde esta el libro abierto (para guardar el sidecar JSON ahi). */
+              private var currentBookFolderUri: Uri? = null
               private var sidecarJob: Job? = null
               private var lastLocator: Locator? = null
               private var lastTotalPages: Int = 1
               private var lastPageIndex: Int = 0
+              /** Lista de capítulos para navegación lineal (readingOrder). */
               private var chapters: List<Link> = emptyList()
+              /** Tabla de contenidos jerárquica (para el selector de capítulos). */
+              private var tableOfContents: List<Link> = emptyList()
               private var chapterIndex: Int = -1
               private var libraryTreeUri: Uri? = null
 
@@ -477,6 +622,7 @@ jobs:
                       )
                       prefs().edit().putString("library_tree_uri", uri.toString()).apply()
                       libraryTreeUri = uri
+                      currentFolderUri = null
                       refreshLibraryButtons()
                       applyGlobalTheme()
                       lifecycleScope.launch { reloadLibrary() }
@@ -504,21 +650,54 @@ jobs:
                   // ============== LIBRARY ==============
                   libraryRoot = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(24), dp(56), dp(24), dp(24))
+                      setPadding(dp(24), dp(48), dp(24), dp(24))
                   }
                   headerTitle = TextView(this).apply {
                       text = "Nu_lec"
-                      textSize = 32f
-                      letterSpacing = 0.02f
+                      textSize = 34f
+                      setTypeface(null, Typeface.BOLD)
+                      letterSpacing = 0.01f
                       setPadding(dp(4), 0, 0, 0)
                   }
                   libraryRoot.addView(headerTitle)
                   headerSub = TextView(this).apply {
                       text = "Tu biblioteca"
                       textSize = 13f
-                      setPadding(dp(4), dp(2), 0, dp(16))
+                      setTypeface(null, Typeface.NORMAL)
+                      letterSpacing = 0.04f
+                      setPadding(dp(4), dp(4), 0, dp(8))
                   }
                   libraryRoot.addView(headerSub)
+
+                  // Fila de navegacion: boton "←" + nombre de carpeta actual.
+                  val navRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(4), 0, 0, dp(12))
+                      visibility = View.GONE
+                    }
+                  navRow.tag = "folder_nav_row"
+                  btnBackFolder = ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_back_folder)
+                      background = null
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                      setOnClickListener { goUpFolder() }
+                  }
+                  val folderName = TextView(this).apply {
+                      id = View.generateViewId()
+                      textSize = 14f
+                      setTypeface(null, Typeface.MEDIUM)
+                      maxLines = 1
+                      ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+                      layoutParams = LinearLayout.LayoutParams(
+                          0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
+                      ).apply { marginStart = dp(4) }
+                  }
+                  folderName.tag = "folder_name"
+                  navRow.addView(btnBackFolder)
+                  navRow.addView(folderName)
+                  libraryRoot.addView(navRow)
+
                   libraryHint = TextView(this).apply {
                       textSize = 12f
                       setPadding(dp(4), 0, 0, dp(12))
@@ -526,7 +705,7 @@ jobs:
                   libraryRoot.addView(libraryHint)
                   btnPickLibrary = Button(this).apply {
                       text = "Elegir carpeta biblioteca"
-                        setOnClickListener { pickLibraryTreeLauncher.launch(null) }
+                      setOnClickListener { pickLibraryTreeLauncher.launch(null) }
                   }
                   libraryRoot.addView(btnPickLibrary)
                   btnOpenExternal = Button(this).apply {
@@ -541,10 +720,22 @@ jobs:
                   libraryRecycler = RecyclerView(this).apply {
                       layoutManager = GridLayoutManager(this@MainActivity, 3)
                       adapter = libraryAdapter
+                      // Espaciado entre tarjetas
+                      val spacing = dp(8)
+                      addItemDecoration(object : RecyclerView.ItemDecoration() {
+                          override fun getItemOffsets(
+                              outRect: android.graphics.Rect,
+                              view: View,
+                              parent: RecyclerView,
+                              state: RecyclerView.State
+                          ) {
+                              outRect.set(spacing, spacing, spacing, spacing)
+                          }
+                      })
                       layoutParams = LinearLayout.LayoutParams(
                           LinearLayout.LayoutParams.MATCH_PARENT,
                           LinearLayout.LayoutParams.MATCH_PARENT
-                      ).apply { topMargin = dp(8) }
+                      ).apply { topMargin = dp(4) }
                   }
                   libraryRoot.addView(libraryRecycler)
                   root.addView(libraryRoot, FrameLayout.LayoutParams(
@@ -567,8 +758,8 @@ jobs:
                   topBar = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setBackgroundColor(0xE6222222.toInt())
-                      setPadding(dp(8), dp(28), dp(8), dp(8))
+                      setBackgroundColor(0xE6161616.toInt())
+                      setPadding(dp(8), dp(28), dp(8), dp(10))
                       visibility = View.GONE
                   }
                   topBar.addView(ImageButton(this).apply {
@@ -581,6 +772,7 @@ jobs:
                       textSize = 16f
                       maxLines = 1
                       setTextColor(Color.WHITE)
+                      letterSpacing = 0.01f
                       layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                           marginStart = dp(8); marginEnd = dp(8)
                       }
@@ -601,7 +793,7 @@ jobs:
                   // ----- Bottom bar: [cap<] progreso [cap>] + capitulo -----
                   bottomBar = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setBackgroundColor(0xE6222222.toInt())
+                      setBackgroundColor(0xE6161616.toInt())
                       setPadding(dp(12), dp(12), dp(12), dp(28))
                       visibility = View.GONE
                   }
@@ -609,12 +801,13 @@ jobs:
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
                   }
-                  progressRow.addView(ImageButton(this).apply {
+                  btnPrevChapter = ImageButton(this).apply {
                       setImageResource(R.drawable.ic_prev_chapter)
                       background = null
                       setPadding(dp(10), dp(10), dp(10), dp(10))
                       setOnClickListener { goToChapter(-1) }
-                  })
+                  }
+                  progressRow.addView(btnPrevChapter)
                   val progressCenter = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       gravity = Gravity.CENTER_HORIZONTAL
@@ -624,21 +817,26 @@ jobs:
                       text = "0% del libro"
                       setTextColor(Color.WHITE)
                       textSize = 13f
+                      setTypeface(null, Typeface.MEDIUM)
                       gravity = Gravity.CENTER_HORIZONTAL
                   }
                   progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                       max = 1000
                       progress = 0
+                      // Color de progreso y traza
+                      progressTintList = android.content.res.ColorStateList.valueOf(ACCENT_DARK)
+                      progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0xFF555555.toInt())
                   }
                   progressCenter.addView(progressText)
                   progressCenter.addView(progressBar)
                   progressRow.addView(progressCenter)
-                  progressRow.addView(ImageButton(this).apply {
+                  btnNextChapter = ImageButton(this).apply {
                       setImageResource(R.drawable.ic_next_chapter)
                       background = null
                       setPadding(dp(10), dp(10), dp(10), dp(10))
                       setOnClickListener { goToChapter(+1) }
-                  })
+                  }
+                  progressRow.addView(btnNextChapter)
                   bottomBar.addView(progressRow)
                   chapterText = TextView(this).apply {
                       text = ""
@@ -658,7 +856,7 @@ jobs:
                   // ----- Panel de Ajustes -----
                   settingsPanel = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(24), dp(28), dp(24), dp(28))
+                      setPadding(dp(28), dp(32), dp(28), dp(32))
                       visibility = View.GONE
                       elevation = dp(12).toFloat()
                   }
@@ -666,39 +864,63 @@ jobs:
                   fun sectionLabel(txt: String): TextView {
                       val tv = TextView(this).apply {
                           text = txt
-                          textSize = 12f
-                          letterSpacing = 0.08f
-                          setPadding(dp(4), dp(18), 0, dp(6))
+                          textSize = 11f
+                          letterSpacing = 0.10f
+                          setTypeface(null, Typeface.BOLD)
+                          setPadding(dp(4), dp(26), 0, dp(10))
                       }
                       sectionLabels.add(tv)
                       return tv
                   }
+                  /** Fila horizontal con espaciado entre chips y margen inferior. */
+                  fun chipRow(): LinearLayout = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      ).apply { bottomMargin = dp(4) }
+                  }
+                  /** Chip con padding interno generoso para que respiren. */
                   fun chip(label: String, onClick: (View) -> Unit): Button {
                       val b = Button(this).apply {
                           text = label
                           setAllCaps(false)
                           textSize = 13f
+                          setTypeface(null, Typeface.MEDIUM)
+                          setPadding(dp(16), dp(12), dp(16), dp(12))
                           setOnClickListener(onClick)
                           layoutParams = LinearLayout.LayoutParams(
                               0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
-                          ).apply { marginEnd = dp(6) }
+                          ).apply {
+                              marginEnd = dp(8)
+                              marginStart = dp(0)
+                          }
                       }
                       return b
                   }
+                  /** Chip ancho (boton de acción completa linea). */
+                  fun wideChip(label: String, onClick: (View) -> Unit): Button {
+                      val b = chip(label, onClick)
+                      b.layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      ).apply { bottomMargin = dp(10) }
+                      return b
+                  }
 
+                  // --- TEMA ---
                   settingsPanel.addView(sectionLabel("TEMA"))
-                  val themeRow = LinearLayout(this)
+                  val themeRow = chipRow()
                   themeChips.add(chip("Auto") { applyTheme(null) }.also(themeRow::addView))
                   themeChips.add(chip("Claro") { applyTheme(Theme.LIGHT) }.also(themeRow::addView))
                   themeChips.add(chip("Sepia") { applyTheme(Theme.SEPIA) }.also(themeRow::addView))
                   themeChips.add(chip("Oscuro") { applyTheme(Theme.DARK) }.also(themeRow::addView))
                   settingsPanel.addView(themeRow)
 
+                  // --- BRILLO ---
                   settingsPanel.addView(sectionLabel("BRILLO"))
-                  val brightnessRow = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      gravity = Gravity.CENTER_VERTICAL
-                  }
+                  val brightnessRow = chipRow()
                   brightnessSeekBar = SeekBar(this).apply {
                       max = 100
                       progress = (loadBrightness() * 100).toInt().coerceIn(0, 100)
@@ -717,28 +939,28 @@ jobs:
                   brightnessValue = TextView(this).apply {
                       text = "${brightnessSeekBar.progress}%"
                       textSize = 13f
+                      setTypeface(null, Typeface.MEDIUM)
                       setPadding(dp(12), 0, 0, 0)
                   }
                   brightnessRow.addView(brightnessSeekBar)
                   brightnessRow.addView(brightnessValue)
                   settingsPanel.addView(brightnessRow)
 
+                  // --- FUENTE ---
                   settingsPanel.addView(sectionLabel("FUENTE"))
-                  val fontRow = LinearLayout(this)
+                  val fontRow = chipRow()
                   fontChips.add(chip("Original") { applyFontFamily("") }.also(fontRow::addView))
                   fontChips.add(chip("Serif") { applyFontFamily("PT Serif") }.also(fontRow::addView))
                   fontChips.add(chip("Sans") { applyFontFamily("Roboto") }.also(fontRow::addView))
                   fontChips.add(chip("Sans Pro") { applyFontFamily("Source Sans Pro") }.also(fontRow::addView))
                   settingsPanel.addView(fontRow)
 
-                  val fontSizeRow = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      gravity = Gravity.CENTER_VERTICAL
-                  }
+                  val fontSizeRow = chipRow()
                   otherChips.add(chip("A-") { applyFontSizeDelta(-0.1) }.also(fontSizeRow::addView))
                   fontSizeValue = TextView(this).apply {
                       text = "100%"
                       textSize = 13f
+                      setTypeface(null, Typeface.MEDIUM)
                       gravity = Gravity.CENTER
                       layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f)
                   }
@@ -746,20 +968,21 @@ jobs:
                   otherChips.add(chip("A+") { applyFontSizeDelta(+0.1) }.also(fontSizeRow::addView))
                   settingsPanel.addView(fontSizeRow)
 
-                  settingsPanel.addView(sectionLabel("BIBLIOTECA"))
-                  otherChips.add(chip("Cambiar carpeta") { pickLibraryTreeLauncher.launch(null) }
+                  // --- CAPÍTULOS (lista desplegable) ---
+                  settingsPanel.addView(sectionLabel("CAPÍTULOS"))
+                  otherChips.add(wideChip("Ver índice de capítulos") { showChapterList() }
                       .also(settingsPanel::addView))
-                  otherChips.add(chip("Abrir EPUB externo") {
+
+                  // --- BIBLIOTECA ---
+                  settingsPanel.addView(sectionLabel("BIBLIOTECA"))
+                  // "Cambiar carpeta" SIEMPRE visible (también con biblioteca seleccionada).
+                  otherChips.add(wideChip("Cambiar carpeta biblioteca") { pickLibraryTreeLauncher.launch(null) }
+                      .also(settingsPanel::addView))
+                  otherChips.add(wideChip("Abrir EPUB externo") {
                       openEpubLauncher.launch(arrayOf(
                           "application/epub+zip", "application/octet-stream"
                       ))
-                  }.also { b ->
-                      b.layoutParams = LinearLayout.LayoutParams(
-                          FrameLayout.LayoutParams.MATCH_PARENT,
-                          FrameLayout.LayoutParams.WRAP_CONTENT
-                      )
-                      settingsPanel.addView(b)
-                  })
+                  }.also(settingsPanel::addView))
 
                   readerRoot.addView(settingsPanel, FrameLayout.LayoutParams(
                       FrameLayout.LayoutParams.MATCH_PARENT,
@@ -779,30 +1002,41 @@ jobs:
 
               private fun applyGlobalTheme() {
                   val dark = isDark
-                  val bg = if (dark) 0xFF121212.toInt() else 0xFFFCFCFC.toInt()
+                  val bg = if (dark) 0xFF121212.toInt() else 0xFFFAFAFA.toInt()
                   val txt = if (dark) 0xFFF5F5F5.toInt() else 0xFF1A1A1A.toInt()
                   val sub = if (dark) 0xFF9E9E9E.toInt() else 0xFF757575.toInt()
 
                   libraryRoot.setBackgroundColor(bg)
-                  headerTitle.setTextColor(txt)
+                  headerTitle.setTextColor(if (dark) 0xFFFFFFFF.toInt() else ACCENT)
                   headerSub.setTextColor(sub)
                   libraryHint.setTextColor(sub)
                   libraryAdapter.isDark = dark
 
+                  // Botones biblioteca
+                  val btnBg = GradientDrawable().apply {
+                      cornerRadius = 12 * density
+                      setColor(if (dark) 0xFF2A2A2A.toInt() else ACCENT)
+                      setStroke(dp(1), if (dark) 0xFF444444.toInt() else ACCENT_DARK)
+                  }
+                  btnPickLibrary.background = btnBg
+                  btnPickLibrary.setTextColor(if (dark) 0xFFEDEDED.toInt() else Color.WHITE)
+                  btnOpenExternal.background = btnBg
+                  btnOpenExternal.setTextColor(if (dark) 0xFFEDEDED.toInt() else Color.WHITE)
+
                   // Panel de ajustes
                   val panelBg = GradientDrawable().apply {
-                      cornerRadius = 20 * density
-                      setColor(if (dark) 0xFF1E1E1E.toInt() else 0xFFF5F5F5.toInt())
+                      cornerRadius = 24 * density
+                      setColor(if (dark) 0xFF1E1E1E.toInt() else 0xFFFAFAFA.toInt())
                       setStroke(dp(1), if (dark) 0xFF333333.toInt() else 0xFFE0E0E0.toInt())
                   }
                   settingsPanel.background = panelBg
                   sectionLabels.forEach {
-                      it.setTextColor(if (dark) 0xFF8AB4F8.toInt() else 0xFF3B6EA5.toInt())
+                      it.setTextColor(if (dark) 0xFF8AB4F8.toInt() else ACCENT)
                   }
                   fun paintChip(b: Button) {
                       val chipBg = GradientDrawable().apply {
                           cornerRadius = 20 * density
-                          setColor(if (dark) 0xFF2E2E2E.toInt() else 0xFFEAEAEA.toInt())
+                          setColor(if (dark) 0xFF2E2E2E.toInt() else 0xFFEEEEEE.toInt())
                       }
                       b.background = chipBg
                       b.setTextColor(if (dark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
@@ -823,14 +1057,27 @@ jobs:
 
               // ============== LIBRARY ==============
 
+              /**
+               * Recarga el contenido de la carpeta actual (currentFolderUri o raiz).
+               * Muestra subcarpetas como COLLECTION (con conteo de .epub dentro) y
+               * archivos .epub como BOOK.
+               */
               private suspend fun reloadLibrary() {
                   val tree = libraryTreeUri ?: return
                   refreshLibraryButtons()
+                  updateFolderNav()
                   libraryHint.text = "Cargando biblioteca..."
+                  val folderUri = currentFolderUri ?: tree
                   val entries = withContext(Dispatchers.IO) {
-                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
-                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId)
-                      val list = mutableListOf<LibraryEntry>()
+                      // El documentId a listar: si currentFolderUri no es null, usar
+                      // getDocumentId; si no, getTreeDocumentId.
+                      val folderDocId = if (currentFolderUri != null)
+                          DocumentsContract.getDocumentId(folderUri)
+                      else
+                          DocumentsContract.getTreeDocumentId(folderUri)
+                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, folderDocId)
+                      val books = mutableListOf<LibraryEntry>()
+                      val folders = mutableListOf<LibraryEntry>()
                       contentResolver.query(children, arrayOf(
                           Document.COLUMN_DOCUMENT_ID,
                           Document.COLUMN_DISPLAY_NAME,
@@ -842,24 +1089,104 @@ jobs:
                           while (c.moveToNext()) {
                               val name = c.getString(nameIdx) ?: continue
                               val mime = c.getString(mimeIdx) ?: ""
-                              if (mime != "application/epub+zip" &&
-                                  !name.lowercase().endsWith(".epub")) continue
                               val docId = c.getString(idIdx)
                               val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
-                              val meta = readMetadata(docUri, name)
-                              list.add(LibraryEntry(
-                                  fileName = name,
-                                  title = meta.first,
-                                  cover = meta.second,
-                                  documentUri = docUri,
-                              ))
+
+                              val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                              val isEpub = mime == "application/epub+zip" ||
+                                  name.lowercase().endsWith(".epub")
+
+                              if (isDir) {
+                                  val count = countEpubsIn(folderUri = docUri, tree = tree)
+                                  if (count > 0) {
+                                      folders.add(LibraryEntry(
+                                          fileName = name,
+                                          title = name,
+                                          cover = null,
+                                          documentUri = docUri,
+                                          type = LibraryEntryType.COLLECTION,
+                                          bookCount = count,
+                                      ))
+                                  }
+                              } else if (isEpub) {
+                                  val meta = readMetadata(docUri, name)
+                                  books.add(LibraryEntry(
+                                      fileName = name,
+                                      title = meta.first,
+                                      cover = meta.second,
+                                      documentUri = docUri,
+                                  ))
+                              }
                           }
                       }
-                      list.sortedBy { it.title.lowercase() }
+                      // Carpetas primero, luego libros; ambos alfabeticos.
+                      val sorted = (folders.sortedBy { it.title.lowercase() } +
+                          books.sortedBy { it.title.lowercase() })
+                      sorted
                   }
                   libraryAdapter.submit(entries)
-                  headerSub.text = "${entries.size} libros en tu biblioteca"
-                  libraryHint.text = ""
+                  val nBooks = entries.count { it.type == LibraryEntryType.BOOK }
+                  val nFolders = entries.count { it.type == LibraryEntryType.COLLECTION }
+                  headerSub.text = when {
+                      nFolders > 0 && nBooks > 0 ->
+                          "$nFolders colecciones, $nBooks libros"
+                      nFolders > 0 -> "$nFolders colecciones"
+                      else -> "$nBooks libros en tu biblioteca"
+                  }
+                  libraryHint.text = if (entries.isEmpty()) "Carpeta vacía" else ""
+              }
+
+              /** Cuenta cuantos .epub hay directamente dentro de folderUri. */
+              private suspend fun countEpubsIn(folderUri: Uri, tree: Uri): Int = withContext(Dispatchers.IO) {
+                  try {
+                      val folderDocId = DocumentsContract.getDocumentId(folderUri)
+                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, folderDocId)
+                      var count = 0
+                      contentResolver.query(children, arrayOf(
+                          Document.COLUMN_DISPLAY_NAME,
+                          Document.COLUMN_MIME_TYPE
+                      ), null, null, null)?.use { c ->
+                          val nameIdx = c.getColumnIndexOrThrow(Document.COLUMN_DISPLAY_NAME)
+                          val mimeIdx = c.getColumnIndexOrThrow(Document.COLUMN_MIME_TYPE)
+                          while (c.moveToNext()) {
+                              val name = c.getString(nameIdx) ?: continue
+                              val mime = c.getString(mimeIdx) ?: ""
+                              if (mime == "application/epub+zip" ||
+                                  name.lowercase().endsWith(".epub")) count++
+                          }
+                      }
+                      count
+                  } catch (_: Throwable) { 0 }
+              }
+
+              /** Entra en una subcarpeta (entry type COLLECTION). */
+              private suspend fun enterFolder(folderDocUri: Uri, title: String) {
+                  currentFolderUri = folderDocUri
+                  reloadLibrary()
+              }
+
+              /** Vuelve a la carpeta raiz (libraryTreeUri). */
+              private fun goUpFolder() {
+                  currentFolderUri = null
+                  lifecycleScope.launch { reloadLibrary() }
+              }
+
+              /** Muestra/oculta la fila de navegacion y el boton "←". */
+              private fun updateFolderNav() {
+                  val navRow = libraryRoot.findViewWithTag<View>("folder_nav_row") ?: return
+                  val folderName = libraryRoot.findViewWithTag<View>("folder_name") as? TextView ?: return
+                  if (currentFolderUri != null) {
+                      navRow.visibility = View.VISIBLE
+                      // Nombre legible: ultimo segmento de la URI del documento.
+                      val name = runCatching {
+                          DocumentsContract.getDocumentId(currentFolderUri!!)
+                              .substringAfterLast('/')
+                      }.getOrNull() ?: "Carpeta"
+                      folderName.text = name
+                  } else {
+                      navRow.visibility = View.GONE
+                      folderName.text = ""
+                  }
               }
 
               private suspend fun readMetadata(uri: Uri, fallbackName: String): Pair<String, Bitmap?> = withContext(Dispatchers.IO) {
@@ -884,10 +1211,15 @@ jobs:
               }
 
               private suspend fun openEpubFromLibrary(entry: LibraryEntry) {
+                  // El sidecar JSON se guardara en la misma carpeta donde esta el libro.
+                  currentBookFolderUri = currentFolderUri ?: libraryTreeUri
                   openEpubInternal(uri = entry.documentUri, displayName = entry.fileName, title = entry.title)
               }
 
               private suspend fun openEpubExternal(uri: Uri) {
+                  // Libro externo: no hay carpeta asociada; usamos la carpeta actual
+                  // o la raiz de la biblioteca si existe (asi se sincroniza tambien).
+                  currentBookFolderUri = currentFolderUri ?: libraryTreeUri
                   val name = queryDisplayName(uri) ?: "libro.epub"
                   openEpubInternal(uri = uri, displayName = name, title = name.substringBeforeLast('.'))
               }
@@ -919,6 +1251,7 @@ jobs:
                               "${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
 
                       chapters = publication.readingOrder
+                      tableOfContents = publication.tableOfContents
                       chapterIndex = 0
 
                       val initialLocator = loadSidecar(displayName) ?: loadLocator(displayName)
@@ -966,14 +1299,15 @@ jobs:
                   }
               }
 
-              /** Progreso global del libro (no solo del capitulo). */
+              /**
+               * Progreso GLOBAL del libro: usa locator.locations.totalProgression
+               * (entre 0 y 1) que Readium calcula considerando toda la obra.
+               * Como respaldo, si no viene, aproximamos por indice de capitulo.
+               */
               private fun updateProgress(locator: Locator) {
-                  // 1) Localizar capitulo actual por href.
                   val idx = chapters.indexOfFirst { it.url() == locator.href }
                   if (idx >= 0) chapterIndex = idx
 
-                  // 2) Porcentaje global: Readium lo calcula en totalProgression.
-                  //    Si no viene, aproximamos por capitulos.
                   val globalPct = locator.locations.totalProgression?.let { (it * 100).toInt() }
                       ?: run {
                           if (chapters.isEmpty()) 0
@@ -987,21 +1321,79 @@ jobs:
                   progressBar.progress = (globalPct * 10).coerceIn(0, 1000)
                   progressText.text = "$globalPct% del libro"
 
-                  // 3) Nombre del capitulo.
                   val chTitle = chapters.getOrNull(chapterIndex)?.title
                   chapterText.text = chTitle
-                      ?: if (chapterIndex >= 0) "Capítulo ${chapterIndex + 1} de ${chapters.size}"
+                      ?: if (chapterIndex >= 0) "Capitulo ${chapterIndex + 1} de ${chapters.size}"
                       else ""
+
+                  // Habilitar/deshabilitar botones de capitulo segun extremos.
+                  btnPrevChapter.isEnabled = chapterIndex > 0
+                  btnNextChapter.isEnabled = chapterIndex < chapters.lastIndex
+                  btnPrevChapter.alpha = if (btnPrevChapter.isEnabled) 1f else 0.35f
+                  btnNextChapter.alpha = if (btnNextChapter.isEnabled) 1f else 0.35f
               }
 
-              /** Salta al capitulo anterior/siguiente. */
+              /** Salta al capitulo anterior/siguiente usando navigator.go(Link). */
               private fun goToChapter(delta: Int) {
                   val nav = navigator ?: return
                   if (chapters.isEmpty()) return
-                  val idx = if (chapterIndex >= 0)
-                      (chapterIndex + delta).coerceIn(0, chapters.lastIndex) else 0
+                  val cur = if (chapterIndex >= 0) chapterIndex else 0
+                  val idx = (cur + delta).coerceIn(0, chapters.lastIndex)
+                  if (idx == cur && chapterIndex >= 0) return
                   nav.go(chapters[idx])
                   chapterIndex = idx
+              }
+
+              /**
+               * Aplana la tabla de contenidos (con su jerarquia) en una lista
+               * de (Link, nivel) para mostrar en el dialogo.
+               */
+              private fun flattenToc(
+                  links: List<Link>,
+                  level: Int = 0,
+                  out: MutableList<Pair<Link, Int>> = mutableListOf(),
+              ): MutableList<Pair<Link, Int>> {
+                  for (l in links) {
+                      val title = l.title ?: ""
+                      val href = l.url().toString()
+                      if (title.isNotBlank() || href.isNotBlank()) {
+                          out.add(l to level)
+                      }
+                      if (l.children.isNotEmpty()) {
+                          flattenToc(l.children, level + 1, out)
+                      }
+                  }
+                  return out
+              }
+
+              /** Dialogo con la tabla de contenidos para saltar a un capitulo. */
+              private fun showChapterList() {
+                  val nav = navigator ?: return
+                  if (tableOfContents.isEmpty() && chapters.isEmpty()) {
+                      Toast.makeText(this, "Sin indice de capitulos", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+                  val flat = flattenToc(if (tableOfContents.isNotEmpty()) tableOfContents else chapters)
+                  if (flat.isEmpty()) {
+                      Toast.makeText(this, "Sin indice de capitulos", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+                  val items = flat.mapIndexed { i, (link, level) ->
+                      val indent = "  ".repeat(level)
+                      (link.title ?: "Capitulo ${i + 1}").let { indent + it }
+                  }.toTypedArray()
+                  AlertDialog.Builder(this)
+                      .setTitle("Capitulos")
+                      .setItems(items) { _, which ->
+                          val (link, _) = flat[which]
+                          nav.go(link)
+                          // Cierra ajustes y overlays para que se vea la lectura.
+                          if (settingsVisible) toggleSettingsPanel()
+                          topBar.visibility = View.GONE
+                          bottomBar.visibility = View.GONE
+                      }
+                      .setNegativeButton("Cerrar", null)
+                      .show()
               }
 
               fun toggleReaderOverlay() {
@@ -1037,6 +1429,7 @@ jobs:
                   lastPageIndex = 0
                   lastTotalPages = 1
                   chapters = emptyList()
+                  tableOfContents = emptyList()
                   chapterIndex = -1
                   navigator?.let {
                       try {
@@ -1157,6 +1550,9 @@ jobs:
                   if (readerRoot.visibility == View.VISIBLE) {
                       if (settingsVisible) toggleSettingsPanel()
                       else closeBook()
+                  } else if (currentFolderUri != null) {
+                      // Si estamos en una subcarpeta, volver a la carpeta raiz.
+                      goUpFolder()
                   } else {
                       super.onBackPressed()
                   }
@@ -1201,12 +1597,19 @@ jobs:
 
               private suspend fun findSidecarUri(bookName: String): Uri? {
                   val tree = libraryTreeUri ?: return null
+                  val folderUri = currentBookFolderUri ?: tree
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
                   return withContext(Dispatchers.IO) {
-                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
+                      // Si currentBookFolderUri es una subcarpeta, getDocumentId funciona;
+                      // si es la raiz (tree), necesitamos getTreeDocumentId.
+                      val folderDocId = if (folderUri == tree)
+                          DocumentsContract.getTreeDocumentId(tree)
+                      else
+                          runCatching { DocumentsContract.getDocumentId(folderUri) }.getOrNull()
+                              ?: DocumentsContract.getTreeDocumentId(tree)
                       var found: Uri? = null
                       contentResolver.query(
-                          DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId),
+                          DocumentsContract.buildChildDocumentsUriUsingTree(tree, folderDocId),
                           arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME),
                           null, null, null
                       )?.use { c ->
@@ -1239,6 +1642,7 @@ jobs:
 
               private suspend fun saveSidecar(bookName: String, locator: Locator) {
                   val tree = libraryTreeUri ?: return
+                  val folderUri = currentBookFolderUri ?: tree
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
                   val json = JSONObject().apply {
                       put("version", 1)
@@ -1248,12 +1652,16 @@ jobs:
                           SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
                   }.toString(2)
                   withContext(Dispatchers.IO) {
-                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
-                      val treeDocUri = DocumentsContract.buildDocumentUriUsingTree(tree, treeDocId)
+                      val folderDocId = if (folderUri == tree)
+                          DocumentsContract.getTreeDocumentId(tree)
+                      else
+                          runCatching { DocumentsContract.getDocumentId(folderUri) }.getOrNull()
+                              ?: DocumentsContract.getTreeDocumentId(tree)
+                      val folderDocUri = DocumentsContract.buildDocumentUriUsingTree(tree, folderDocId)
                       var target = findSidecarUri(bookName)
                       if (target == null) {
                           target = DocumentsContract.createDocument(
-                              contentResolver, treeDocUri,
+                              contentResolver, folderDocUri,
                               "application/json", sidecarName
                           ) ?: return@withContext
                       }
@@ -1280,6 +1688,16 @@ jobs:
               android:width="24dp" android:height="24dp"
               android:viewportWidth="24" android:viewportHeight="24">
               <path android:fillColor="#FFFFFFFF"
+                  android:pathData="M20,11H7.83l5.59,-5.59L12,4l-8,8 8,8 1.41,-1.41L7.83,13H20v-2z"/>
+          </vector>
+          EOF
+
+          # --- drawable/ic_back_folder.xml (flecha atras azul, para biblioteca) ---
+          cat > app/src/main/res/drawable/ic_back_folder.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FF2563EB"
                   android:pathData="M20,11H7.83l5.59,-5.59L12,4l-8,8 8,8 1.41,-1.41L7.83,13H20v-2z"/>
           </vector>
           EOF
@@ -1314,7 +1732,21 @@ jobs:
           </vector>
           EOF
 
-          # --- drawable/ic_launcher.xml (icono: libro sobre fondo azul redondeado) ---
+          # --- drawable/ic_launcher_foreground.xml (vector libro blanco) ---
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <group android:translateX="32" android:translateY="32"
+                  android:scaleX="1.8" android:scaleY="1.8">
+                  <path android:fillColor="#FFFFFFFF"
+                      android:pathData="M21,5c-1.11,-0.35 -2.33,-0.5 -3.5,-0.5 -1.95,0 -4.05,0.4 -5.5,1.5 -1.45,-1.1 -3.55,-1.5 -5.5,-1.5S2.45,4.9 1,6v14.65c0,0.25 0.25,0.5 0.5,0.5 0.1,0 0.15,-0.05 0.25,-0.05C3.1,20.45 5.05,20 6.5,20c1.95,0 4.05,0.4 5.5,1.5 1.35,-0.85 3.8,-1.5 5.5,-1.5 1.65,0 3.35,0.3 4.75,1.05 0.1,0.05 0.15,0.05 0.25,0.05 0.25,0 0.5,-0.25 0.5,-0.5V6c-0.6,-0.45 -1.25,-0.75 -2,-1zM21,18.5c-1.1,-0.35 -2.3,-0.5 -3.5,-0.5 -1.7,0 -4.15,0.65 -5.5,1.5V8c1.35,-0.85 3.8,-1.5 5.5,-1.5 1.2,0 2.4,0.15 3.5,0.5V18.5z"/>
+              </group>
+          </vector>
+          EOF
+
+          # --- drawable/ic_launcher.xml (icono legacy: libro sobre fondo azul redondeado) ---
+          # Se usa en Android < 8 (minSdk 24) como fallback en mipmap-*
           cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
               android:width="108dp" android:height="108dp"
@@ -1328,6 +1760,49 @@ jobs:
               </group>
           </vector>
           EOF
+
+          # --- drawable/ic_launcher_background.xml (color solido) ---
+          cat > app/src/main/res/drawable/ic_launcher_background.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#2563EB" android:pathData="M0,0h108v108h-108z"/>
+          </vector>
+          EOF
+
+          # --- mipmap-anydpi-v26/ic_launcher.xml (adaptive icon Android 8+) ---
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+              <monochrome android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF
+
+          # --- mipmap-anydpi-v26/ic_launcher_round.xml (mismo para icono redondo) ---
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+              <monochrome android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF
+
+          # --- mipmap-* fallback (Android 7.x): XML que apunta al drawable legacy ---
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cat > app/src/main/res/mipmap-$d/ic_launcher.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+              android:src="@drawable/ic_launcher"/>
+          EOF
+            cat > app/src/main/res/mipmap-$d/ic_launcher_round.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+              android:src="@drawable/ic_launcher"/>
+          EOF
+          done
 
           # --- values/strings.xml ---
           cat > app/src/main/res/values/strings.xml <<'EOF'
