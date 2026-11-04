@@ -115,8 +115,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 20
-                  versionName = "1.9"
+                  versionCode = 21
+                  versionName = "2.0"
               }
           
               buildTypes {
@@ -520,6 +520,8 @@ jobs:
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
           import android.provider.DocumentsContract
           import android.provider.DocumentsContract.Document
           import android.provider.OpenableColumns
@@ -639,6 +641,11 @@ jobs:
               // settingsPanel es el ScrollView (overlay), settingsContent es la tarjeta interior.
               private lateinit var settingsPanel: ScrollView
               private lateinit var settingsContent: LinearLayout
+              // Contenedores de cada seccion del panel de ajustes (para mostrar/ocultar
+              // segun el contexto: biblioteca / lector EPUB / lector Comic).
+              private lateinit var sectionGeneral: LinearLayout
+              private lateinit var sectionEpub: LinearLayout
+              private lateinit var sectionComic: LinearLayout
               private lateinit var brightnessSeekBar: SeekBar
               private lateinit var brightnessValue: TextView
               private lateinit var fontSizeValue: TextView
@@ -1021,7 +1028,7 @@ jobs:
                           LinearLayout.LayoutParams.WRAP_CONTENT
                       ).apply { bottomMargin = dp(4) }
                   }
-                  fun chip(label: String, onClick: (View) -> Unit): Button {
+                  fun chip(label: String, activeWhen: (() -> Boolean)? = null, onClick: (View) -> Unit): Button {
                       val b = Button(this).apply {
                           text = label
                           setAllCaps(false)
@@ -1036,11 +1043,15 @@ jobs:
                               marginStart = dp(0)
                           }
                       }
+                      // Guardamos la lambda que decide si el chip está activo, para pintarlo
+                      // resaltado en applyGlobalTheme/refreshChips. Si es null, el chip nunca
+                      // se resalta (es un botón de acción, no de estado).
+                      if (activeWhen != null) b.tag = activeWhen
                       allChips.add(b)
                       return b
                   }
                   fun wideChip(label: String, onClick: (View) -> Unit): Button {
-                      val b = chip(label, onClick)
+                      val b = chip(label, onClick = onClick)
                       b.layoutParams = LinearLayout.LayoutParams(
                           LinearLayout.LayoutParams.MATCH_PARENT,
                           LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1049,17 +1060,22 @@ jobs:
                   }
           
                   // ===== SECCIÓN: GENERAL =====
-                  settingsContent.addView(sectionLabel("GENERAL"))
+                  // Envolvemos cada seccion en un LinearLayout vertical para poder
+                  // mostrarla/ocultarla segun el contexto (biblioteca / EPUB / Comic).
+                  sectionGeneral = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  sectionGeneral.addView(sectionLabel("GENERAL"))
           
-                  settingsContent.addView(labelSmall("Tema de la app"))
+                  sectionGeneral.addView(labelSmall("Tema de la app"))
                   val appThemeRow = chipRow()
-                  appThemeRow.addView(chip("Auto") { applyTheme(null) })
-                  appThemeRow.addView(chip("Claro") { applyTheme(Theme.LIGHT) })
-                  appThemeRow.addView(chip("Sepia") { applyTheme(Theme.SEPIA) })
-                  appThemeRow.addView(chip("Oscuro") { applyTheme(Theme.DARK) })
-                  settingsContent.addView(appThemeRow)
+                  appThemeRow.addView(chip("Auto", activeWhen = { prefs().getString("pref_theme", "AUTO") == "AUTO" }) { applyTheme(null) })
+                  appThemeRow.addView(chip("Claro", activeWhen = { prefs().getString("pref_theme", "AUTO") == "LIGHT" }) { applyTheme(Theme.LIGHT) })
+                  appThemeRow.addView(chip("Sepia", activeWhen = { prefs().getString("pref_theme", "AUTO") == "SEPIA" }) { applyTheme(Theme.SEPIA) })
+                  appThemeRow.addView(chip("Oscuro", activeWhen = { prefs().getString("pref_theme", "AUTO") == "DARK" }) { applyTheme(Theme.DARK) })
+                  sectionGeneral.addView(appThemeRow)
           
-                  settingsContent.addView(labelSmall("Brillo"))
+                  sectionGeneral.addView(labelSmall("Brillo"))
                   val brightnessRow = chipRow()
                   brightnessSeekBar = SeekBar(this).apply {
                       max = 100
@@ -1084,54 +1100,58 @@ jobs:
                   }
                   brightnessRow.addView(brightnessSeekBar)
                   brightnessRow.addView(brightnessValue)
-                  settingsContent.addView(brightnessRow)
+                  sectionGeneral.addView(brightnessRow)
           
-                  settingsContent.addView(labelSmall("Mantener pantalla"))
+                  sectionGeneral.addView(labelSmall("Mantener pantalla"))
                   val keepScreenRow = chipRow()
-                  keepScreenRow.addView(chip("ON") { applyKeepScreen(true) })
-                  keepScreenRow.addView(chip("OFF") { applyKeepScreen(false) })
-                  settingsContent.addView(keepScreenRow)
+                  keepScreenRow.addView(chip("ON", activeWhen = { prefs().getBoolean("pref_keep_screen", false) }) { applyKeepScreen(true) })
+                  keepScreenRow.addView(chip("OFF", activeWhen = { !prefs().getBoolean("pref_keep_screen", false) }) { applyKeepScreen(false) })
+                  sectionGeneral.addView(keepScreenRow)
           
-                  settingsContent.addView(labelSmall("Columnas biblioteca"))
+                  sectionGeneral.addView(labelSmall("Columnas biblioteca"))
                   val colsRow = chipRow()
-                  colsRow.addView(chip("Auto") { applyLibraryColumns(0) })
-                  colsRow.addView(chip("2") { applyLibraryColumns(2) })
-                  colsRow.addView(chip("3") { applyLibraryColumns(3) })
-                  colsRow.addView(chip("4") { applyLibraryColumns(4) })
-                  colsRow.addView(chip("5") { applyLibraryColumns(5) })
-                  settingsContent.addView(colsRow)
+                  colsRow.addView(chip("Auto", activeWhen = { prefs().getInt("pref_library_columns", 0) == 0 }) { applyLibraryColumns(0) })
+                  colsRow.addView(chip("2", activeWhen = { prefs().getInt("pref_library_columns", 0) == 2 }) { applyLibraryColumns(2) })
+                  colsRow.addView(chip("3", activeWhen = { prefs().getInt("pref_library_columns", 0) == 3 }) { applyLibraryColumns(3) })
+                  colsRow.addView(chip("4", activeWhen = { prefs().getInt("pref_library_columns", 0) == 4 }) { applyLibraryColumns(4) })
+                  colsRow.addView(chip("5", activeWhen = { prefs().getInt("pref_library_columns", 0) == 5 }) { applyLibraryColumns(5) })
+                  sectionGeneral.addView(colsRow)
           
-                  settingsContent.addView(wideChip("Cambiar carpeta de libros") {
+                  sectionGeneral.addView(wideChip("Cambiar carpeta de libros") {
                       currentMedia = LibraryMediaType.EPUB
                       updateMediaToggle()
                       pickLibraryTreeLauncher.launch(null)
                   })
-                  settingsContent.addView(wideChip("Cambiar carpeta de comics") {
+                  sectionGeneral.addView(wideChip("Cambiar carpeta de comics") {
                       currentMedia = LibraryMediaType.COMIC
                       updateMediaToggle()
                       pickLibraryTreeLauncher.launch(null)
                   })
+                  settingsContent.addView(sectionGeneral)
           
                   // ===== SECCIÓN: LECTURA EPUB =====
-                  settingsContent.addView(sectionLabel("LECTURA EPUB"))
+                  sectionEpub = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  sectionEpub.addView(sectionLabel("LECTURA EPUB"))
           
-                  settingsContent.addView(labelSmall("Tema contenido"))
+                  sectionEpub.addView(labelSmall("Tema contenido"))
                   val epubThemeRow = chipRow()
-                  epubThemeRow.addView(chip("Auto") { applyEpubTheme(null) })
-                  epubThemeRow.addView(chip("Claro") { applyEpubTheme(Theme.LIGHT) })
-                  epubThemeRow.addView(chip("Sepia") { applyEpubTheme(Theme.SEPIA) })
-                  epubThemeRow.addView(chip("Oscuro") { applyEpubTheme(Theme.DARK) })
-                  settingsContent.addView(epubThemeRow)
+                  epubThemeRow.addView(chip("Auto", activeWhen = { prefs().getString("pref_epub_theme", "AUTO") == "AUTO" }) { applyEpubTheme(null) })
+                  epubThemeRow.addView(chip("Claro", activeWhen = { prefs().getString("pref_epub_theme", "AUTO") == "LIGHT" }) { applyEpubTheme(Theme.LIGHT) })
+                  epubThemeRow.addView(chip("Sepia", activeWhen = { prefs().getString("pref_epub_theme", "AUTO") == "SEPIA" }) { applyEpubTheme(Theme.SEPIA) })
+                  epubThemeRow.addView(chip("Oscuro", activeWhen = { prefs().getString("pref_epub_theme", "AUTO") == "DARK" }) { applyEpubTheme(Theme.DARK) })
+                  sectionEpub.addView(epubThemeRow)
           
-                  settingsContent.addView(labelSmall("Fuente"))
+                  sectionEpub.addView(labelSmall("Fuente"))
                   val fontRow = chipRow()
-                  fontRow.addView(chip("Original") { applyEpubFont("") })
-                  fontRow.addView(chip("Serif") { applyEpubFont("PT Serif") })
-                  fontRow.addView(chip("Sans") { applyEpubFont("Roboto") })
-                  fontRow.addView(chip("Sans Pro") { applyEpubFont("Source Sans Pro") })
-                  settingsContent.addView(fontRow)
+                  fontRow.addView(chip("Original", activeWhen = { prefs().getString("pref_font_family", "").isNullOrEmpty() }) { applyEpubFont("") })
+                  fontRow.addView(chip("Serif", activeWhen = { prefs().getString("pref_font_family", "") == "PT Serif" }) { applyEpubFont("PT Serif") })
+                  fontRow.addView(chip("Sans", activeWhen = { prefs().getString("pref_font_family", "") == "Roboto" }) { applyEpubFont("Roboto") })
+                  fontRow.addView(chip("Sans Pro", activeWhen = { prefs().getString("pref_font_family", "") == "Source Sans Pro" }) { applyEpubFont("Source Sans Pro") })
+                  sectionEpub.addView(fontRow)
           
-                  settingsContent.addView(labelSmall("Tamaño"))
+                  sectionEpub.addView(labelSmall("Tamaño"))
                   val fontSizeRow = chipRow()
                   fontSizeRow.addView(chip("A-") { applyFontSizeDelta(-0.1) })
                   fontSizeValue = TextView(this).apply {
@@ -1143,125 +1163,130 @@ jobs:
                   }
                   fontSizeRow.addView(fontSizeValue)
                   fontSizeRow.addView(chip("A+") { applyFontSizeDelta(+0.1) })
-                  settingsContent.addView(fontSizeRow)
+                  sectionEpub.addView(fontSizeRow)
           
-                  settingsContent.addView(labelSmall("Peso fuente"))
+                  sectionEpub.addView(labelSmall("Peso fuente"))
                   val weightRow = chipRow()
-                  weightRow.addView(chip("Regular") { applyEpubWeight(0.0) })
-                  weightRow.addView(chip("Medium") { applyEpubWeight(0.3) })
-                  weightRow.addView(chip("Bold") { applyEpubWeight(0.7) })
-                  settingsContent.addView(weightRow)
+                  weightRow.addView(chip("Regular", activeWhen = { loadEpubFontWeight() == 0.0 }) { applyEpubWeight(0.0) })
+                  weightRow.addView(chip("Medium", activeWhen = { loadEpubFontWeight() == 0.3 }) { applyEpubWeight(0.3) })
+                  weightRow.addView(chip("Bold", activeWhen = { loadEpubFontWeight() == 0.7 }) { applyEpubWeight(0.7) })
+                  sectionEpub.addView(weightRow)
           
-                  settingsContent.addView(labelSmall("Interlineado"))
+                  sectionEpub.addView(labelSmall("Interlineado"))
                   val lineRow = chipRow()
-                  lineRow.addView(chip("Compacto") { applyEpubLineHeight(1.0) })
-                  lineRow.addView(chip("Normal") { applyEpubLineHeight(1.5) })
-                  lineRow.addView(chip("Suelto") { applyEpubLineHeight(2.0) })
-                  settingsContent.addView(lineRow)
+                  lineRow.addView(chip("Compacto", activeWhen = { loadEpubLineHeight() == 1.0 }) { applyEpubLineHeight(1.0) })
+                  lineRow.addView(chip("Normal", activeWhen = { loadEpubLineHeight() == 1.5 }) { applyEpubLineHeight(1.5) })
+                  lineRow.addView(chip("Suelto", activeWhen = { loadEpubLineHeight() == 2.0 }) { applyEpubLineHeight(2.0) })
+                  sectionEpub.addView(lineRow)
           
-                  settingsContent.addView(labelSmall("Margen lateral"))
+                  sectionEpub.addView(labelSmall("Margen lateral"))
                   val marginRow = chipRow()
-                  marginRow.addView(chip("Pequeño") { applyEpubMargin(0.5) })
-                  marginRow.addView(chip("Medio") { applyEpubMargin(1.0) })
-                  marginRow.addView(chip("Grande") { applyEpubMargin(1.5) })
-                  settingsContent.addView(marginRow)
+                  marginRow.addView(chip("Pequeño", activeWhen = { loadEpubPageMargin() == 0.5 }) { applyEpubMargin(0.5) })
+                  marginRow.addView(chip("Medio", activeWhen = { loadEpubPageMargin() == 1.0 }) { applyEpubMargin(1.0) })
+                  marginRow.addView(chip("Grande", activeWhen = { loadEpubPageMargin() == 1.5 }) { applyEpubMargin(1.5) })
+                  sectionEpub.addView(marginRow)
           
-                  settingsContent.addView(labelSmall("Justificación"))
+                  sectionEpub.addView(labelSmall("Justificación"))
                   val justifyRow = chipRow()
-                  justifyRow.addView(chip("Justificado") { applyEpubJustify("JUSTIFY") })
-                  justifyRow.addView(chip("Izquierda") { applyEpubJustify("LEFT") })
-                  settingsContent.addView(justifyRow)
+                  justifyRow.addView(chip("Justificado", activeWhen = { prefs().getString("pref_epub_align", "") == "JUSTIFY" }) { applyEpubJustify("JUSTIFY") })
+                  justifyRow.addView(chip("Izquierda", activeWhen = { prefs().getString("pref_epub_align", "") == "LEFT" }) { applyEpubJustify("LEFT") })
+                  sectionEpub.addView(justifyRow)
           
-                  settingsContent.addView(labelSmall("Sangría párrafo"))
+                  sectionEpub.addView(labelSmall("Sangría párrafo"))
                   val indentRow = chipRow()
-                  indentRow.addView(chip("Sin") { applyEpubIndent(0.0) })
-                  indentRow.addView(chip("Pequeña") { applyEpubIndent(1.0) })
-                  indentRow.addView(chip("Mediana") { applyEpubIndent(2.0) })
-                  settingsContent.addView(indentRow)
+                  indentRow.addView(chip("Sin", activeWhen = { loadEpubParaIndent() == 0.0 }) { applyEpubIndent(0.0) })
+                  indentRow.addView(chip("Pequeña", activeWhen = { loadEpubParaIndent() == 1.0 }) { applyEpubIndent(1.0) })
+                  indentRow.addView(chip("Mediana", activeWhen = { loadEpubParaIndent() == 2.0 }) { applyEpubIndent(2.0) })
+                  sectionEpub.addView(indentRow)
           
-                  settingsContent.addView(labelSmall("Espaciado párrafos"))
+                  sectionEpub.addView(labelSmall("Espaciado párrafos"))
                   val paraSpacingRow = chipRow()
-                  paraSpacingRow.addView(chip("Compacto") { applyEpubParaSpacing(0.0) })
-                  paraSpacingRow.addView(chip("Normal") { applyEpubParaSpacing(1.0) })
-                  paraSpacingRow.addView(chip("Amplio") { applyEpubParaSpacing(2.0) })
-                  settingsContent.addView(paraSpacingRow)
+                  paraSpacingRow.addView(chip("Compacto", activeWhen = { loadEpubParaSpacing() == 0.0 }) { applyEpubParaSpacing(0.0) })
+                  paraSpacingRow.addView(chip("Normal", activeWhen = { loadEpubParaSpacing() == 1.0 }) { applyEpubParaSpacing(1.0) })
+                  paraSpacingRow.addView(chip("Amplio", activeWhen = { loadEpubParaSpacing() == 2.0 }) { applyEpubParaSpacing(2.0) })
+                  sectionEpub.addView(paraSpacingRow)
           
-                  settingsContent.addView(labelSmall("Respetar estilos autor"))
+                  sectionEpub.addView(labelSmall("Respetar estilos autor"))
                   val pubStylesRow = chipRow()
-                  pubStylesRow.addView(chip("ON") { applyEpubPublisherStyles(true) })
-                  pubStylesRow.addView(chip("OFF") { applyEpubPublisherStyles(false) })
-                  settingsContent.addView(pubStylesRow)
+                  pubStylesRow.addView(chip("ON", activeWhen = { prefs().getBoolean("pref_epub_pub_styles", false) }) { applyEpubPublisherStyles(true) })
+                  pubStylesRow.addView(chip("OFF", activeWhen = { !prefs().getBoolean("pref_epub_pub_styles", false) }) { applyEpubPublisherStyles(false) })
+                  sectionEpub.addView(pubStylesRow)
           
-                  settingsContent.addView(labelSmall("Sentido lectura"))
+                  sectionEpub.addView(labelSmall("Sentido lectura"))
                   val epubDirRow = chipRow()
-                  epubDirRow.addView(chip("LTR") { applyEpubReadingDir("LTR") })
-                  epubDirRow.addView(chip("RTL") { applyEpubReadingDir("RTL") })
-                  settingsContent.addView(epubDirRow)
+                  epubDirRow.addView(chip("LTR", activeWhen = { prefs().getString("pref_epub_reading_dir", "") == "LTR" }) { applyEpubReadingDir("LTR") })
+                  epubDirRow.addView(chip("RTL", activeWhen = { prefs().getString("pref_epub_reading_dir", "") == "RTL" }) { applyEpubReadingDir("RTL") })
+                  sectionEpub.addView(epubDirRow)
           
-                  settingsContent.addView(labelSmall("Modo columna"))
+                  sectionEpub.addView(labelSmall("Modo columna"))
                   val epubColRow = chipRow()
-                  epubColRow.addView(chip("Auto") { applyEpubColumn("AUTO") })
-                  epubColRow.addView(chip("1") { applyEpubColumn("ONE") })
-                  epubColRow.addView(chip("2") { applyEpubColumn("TWO") })
-                  settingsContent.addView(epubColRow)
+                  epubColRow.addView(chip("Auto", activeWhen = { prefs().getString("pref_epub_column", "") == "AUTO" }) { applyEpubColumn("AUTO") })
+                  epubColRow.addView(chip("1", activeWhen = { prefs().getString("pref_epub_column", "") == "ONE" }) { applyEpubColumn("ONE") })
+                  epubColRow.addView(chip("2", activeWhen = { prefs().getString("pref_epub_column", "") == "TWO" }) { applyEpubColumn("TWO") })
+                  sectionEpub.addView(epubColRow)
+                  settingsContent.addView(sectionEpub)
           
                   // ===== SECCIÓN: LECTURA COMIC =====
-                  settingsContent.addView(sectionLabel("LECTURA COMIC"))
+                  sectionComic = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  sectionComic.addView(sectionLabel("LECTURA COMIC"))
           
-                  settingsContent.addView(labelSmall("Zoom máximo"))
+                  sectionComic.addView(labelSmall("Zoom máximo"))
                   val czMaxRow = chipRow()
-                  czMaxRow.addView(chip("5x") { applyComicZoomMax(5f) })
-                  czMaxRow.addView(chip("8x") { applyComicZoomMax(8f) })
-                  czMaxRow.addView(chip("10x") { applyComicZoomMax(10f) })
-                  czMaxRow.addView(chip("15x") { applyComicZoomMax(15f) })
-                  czMaxRow.addView(chip("20x") { applyComicZoomMax(20f) })
-                  settingsContent.addView(czMaxRow)
+                  czMaxRow.addView(chip("5x", activeWhen = { loadComicZoomMax() == 5f }) { applyComicZoomMax(5f) })
+                  czMaxRow.addView(chip("8x", activeWhen = { loadComicZoomMax() == 8f }) { applyComicZoomMax(8f) })
+                  czMaxRow.addView(chip("10x", activeWhen = { loadComicZoomMax() == 10f }) { applyComicZoomMax(10f) })
+                  czMaxRow.addView(chip("15x", activeWhen = { loadComicZoomMax() == 15f }) { applyComicZoomMax(15f) })
+                  czMaxRow.addView(chip("20x", activeWhen = { loadComicZoomMax() == 20f }) { applyComicZoomMax(20f) })
+                  sectionComic.addView(czMaxRow)
           
-                  settingsContent.addView(labelSmall("Zoom doble tap"))
+                  sectionComic.addView(labelSmall("Zoom doble tap"))
                   val czDblRow = chipRow()
-                  czDblRow.addView(chip("2x") { applyComicDoubleTap(2f) })
-                  czDblRow.addView(chip("3x") { applyComicDoubleTap(3f) })
-                  czDblRow.addView(chip("4x") { applyComicDoubleTap(4f) })
-                  czDblRow.addView(chip("6x") { applyComicDoubleTap(6f) })
-                  settingsContent.addView(czDblRow)
+                  czDblRow.addView(chip("2x", activeWhen = { loadComicDoubleTap() == 2f }) { applyComicDoubleTap(2f) })
+                  czDblRow.addView(chip("3x", activeWhen = { loadComicDoubleTap() == 3f }) { applyComicDoubleTap(3f) })
+                  czDblRow.addView(chip("4x", activeWhen = { loadComicDoubleTap() == 4f }) { applyComicDoubleTap(4f) })
+                  czDblRow.addView(chip("6x", activeWhen = { loadComicDoubleTap() == 6f }) { applyComicDoubleTap(6f) })
+                  sectionComic.addView(czDblRow)
           
-                  settingsContent.addView(labelSmall("Modo visualización"))
+                  sectionComic.addView(labelSmall("Modo visualización"))
                   val czViewRow = chipRow()
-                  czViewRow.addView(chip("Ancho") { applyComicViewMode("WIDTH") })
-                  czViewRow.addView(chip("Alto") { applyComicViewMode("HEIGHT") })
-                  czViewRow.addView(chip("Completa") { applyComicViewMode("FULL") })
-                  settingsContent.addView(czViewRow)
+                  czViewRow.addView(chip("Ancho", activeWhen = { loadComicViewMode() == "WIDTH" }) { applyComicViewMode("WIDTH") })
+                  czViewRow.addView(chip("Alto", activeWhen = { loadComicViewMode() == "HEIGHT" }) { applyComicViewMode("HEIGHT") })
+                  czViewRow.addView(chip("Completa", activeWhen = { loadComicViewMode() == "FULL" }) { applyComicViewMode("FULL") })
+                  sectionComic.addView(czViewRow)
           
-                  settingsContent.addView(labelSmall("Color de fondo"))
+                  sectionComic.addView(labelSmall("Color de fondo"))
                   val czBgRow = chipRow()
-                  czBgRow.addView(chip("Negro") { applyComicBgColor(0) })
-                  czBgRow.addView(chip("Blanco") { applyComicBgColor(1) })
-                  czBgRow.addView(chip("Auto") { applyComicBgColor(2) })
-                  settingsContent.addView(czBgRow)
+                  czBgRow.addView(chip("Negro", activeWhen = { loadComicBgColor() == 0 }) { applyComicBgColor(0) })
+                  czBgRow.addView(chip("Blanco", activeWhen = { loadComicBgColor() == 1 }) { applyComicBgColor(1) })
+                  czBgRow.addView(chip("Auto", activeWhen = { loadComicBgColor() == 2 }) { applyComicBgColor(2) })
+                  sectionComic.addView(czBgRow)
           
-                  settingsContent.addView(labelSmall("Sentido lectura"))
+                  sectionComic.addView(labelSmall("Sentido lectura"))
                   val czDirRow = chipRow()
-                  czDirRow.addView(chip("LTR") { applyComicReadingDir("LTR") })
-                  czDirRow.addView(chip("RTL") { applyComicReadingDir("RTL") })
-                  settingsContent.addView(czDirRow)
+                  czDirRow.addView(chip("LTR", activeWhen = { loadComicReadingDir() == "LTR" }) { applyComicReadingDir("LTR") })
+                  czDirRow.addView(chip("RTL", activeWhen = { loadComicReadingDir() == "RTL" }) { applyComicReadingDir("RTL") })
+                  sectionComic.addView(czDirRow)
           
-                  settingsContent.addView(labelSmall("Rotación dobles"))
+                  sectionComic.addView(labelSmall("Rotación dobles"))
                   val czRotRow = chipRow()
-                  czRotRow.addView(chip("ON") { applyComicRotation(true) })
-                  czRotRow.addView(chip("OFF") { applyComicRotation(false) })
-                  settingsContent.addView(czRotRow)
+                  czRotRow.addView(chip("ON", activeWhen = { loadComicRotation() }) { applyComicRotation(true) })
+                  czRotRow.addView(chip("OFF", activeWhen = { !loadComicRotation() }) { applyComicRotation(false) })
+                  sectionComic.addView(czRotRow)
           
-                  settingsContent.addView(labelSmall("Brillo específico"))
+                  sectionComic.addView(labelSmall("Brillo específico"))
                   val czBrightRow = chipRow()
-                  czBrightRow.addView(chip("ON") { applyComicBrightSep(true) })
-                  czBrightRow.addView(chip("OFF") { applyComicBrightSep(false) })
-                  settingsContent.addView(czBrightRow)
+                  czBrightRow.addView(chip("ON", activeWhen = { loadComicBrightSep() }) { applyComicBrightSep(true) })
+                  czBrightRow.addView(chip("OFF", activeWhen = { !loadComicBrightSep() }) { applyComicBrightSep(false) })
+                  sectionComic.addView(czBrightRow)
           
-                  settingsContent.addView(labelSmall("Mantener pantalla"))
+                  sectionComic.addView(labelSmall("Mantener pantalla"))
                   val czKeepRow = chipRow()
-                  czKeepRow.addView(chip("ON") { applyComicKeepScreen(true) })
-                  czKeepRow.addView(chip("OFF") { applyComicKeepScreen(false) })
-                  settingsContent.addView(czKeepRow)
+                  czKeepRow.addView(chip("ON", activeWhen = { loadComicKeepScreen() }) { applyComicKeepScreen(true) })
+                  czKeepRow.addView(chip("OFF", activeWhen = { !loadComicKeepScreen() }) { applyComicKeepScreen(false) })
+                  sectionComic.addView(czKeepRow)
+                  settingsContent.addView(sectionComic)
           
                   // Panel como overlay sobre todo (root), no sobre readerRoot.
                   root.addView(settingsPanel, FrameLayout.LayoutParams(
@@ -1311,19 +1336,66 @@ jobs:
                   labelsSmall.forEach {
                       it.setTextColor(txt)
                   }
-                  fun paintChip(b: Button) {
+                  fun paintChipActive(b: Button, isActive: Boolean) {
                       val chipBg = GradientDrawable().apply {
                           cornerRadius = 20 * density
-                          setColor(if (dark) 0xFF2E2E2E.toInt() else 0xFFEEEEEE.toInt())
+                          if (isActive) {
+                              setColor(ACCENT)
+                              setStroke(dp(1), ACCENT_DARK)
+                          } else {
+                              setColor(if (dark) 0xFF2E2E2E.toInt() else 0xFFEEEEEE.toInt())
+                          }
                       }
                       b.background = chipBg
-                      b.setTextColor(if (dark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                      b.setTextColor(if (isActive) Color.WHITE else (if (dark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt()))
                   }
-                  allChips.forEach(::paintChip)
+                  allChips.forEach { b ->
+                      // Cada chip guarda en tag una lambda () -> Boolean (si tiene estado).
+                      val isActive = (b.tag as? (() -> Boolean))?.invoke() == true
+                      paintChipActive(b, isActive)
+                  }
                   brightnessValue.setTextColor(txt)
                   fontSizeValue.setTextColor(txt)
                   // Actualiza el color de los iconos de selección de biblioteca.
                   updateMediaToggle()
+              }
+          
+              /**
+               * Re-pinta solo el resaltado de los chips segun su estado activo.
+               * Llamado tras cualquier apply* para que el chip recien pulsado se
+               * resalte al instante sin tener que re-tematizar toda la UI.
+               */
+              private fun refreshChips() {
+                  val dark = isDark
+                  allChips.forEach { b ->
+                      val isActive = (b.tag as? (() -> Boolean))?.invoke() == true
+                      val chipBg = GradientDrawable().apply {
+                          cornerRadius = 20 * density
+                          if (isActive) {
+                              setColor(ACCENT)
+                              setStroke(dp(1), ACCENT_DARK)
+                          } else {
+                              setColor(if (dark) 0xFF2E2E2E.toInt() else 0xFFEEEEEE.toInt())
+                          }
+                      }
+                      b.background = chipBg
+                      b.setTextColor(if (isActive) Color.WHITE else (if (dark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt()))
+                  }
+              }
+          
+              /**
+               * Muestra/oculta las secciones del panel de ajustes segun el contexto:
+               *  - En biblioteca: solo GENERAL.
+               *  - Lector EPUB: GENERAL + LECTURA EPUB.
+               *  - Lector Comic: GENERAL + LECTURA COMIC.
+               */
+              private fun updateSettingsSections() {
+                  val readerVisible = readerRoot.visibility == View.VISIBLE
+                  val isEpub = navigator is EpubNavigatorFragment
+                  val isComic = navigator is ImageNavigatorFragment
+                  sectionGeneral.visibility = View.VISIBLE
+                  sectionEpub.visibility = if (readerVisible && isEpub) View.VISIBLE else View.GONE
+                  sectionComic.visibility = if (readerVisible && isComic) View.VISIBLE else View.GONE
               }
           
               private fun refreshLibraryButtons() {
@@ -1645,9 +1717,24 @@ jobs:
                               configurePhotoViewZoom(it)
                               applyComicNavigatorStyle(it)
                           }
+                          // Re-aplicar la configuracion de zoom con un pequeno retardo, despues
+                          // de que la primera pagina se renderice. Cada pagina de comic tiene su
+                          // propio PhotoView y nace con los defaults de PhotoView (8x maximo);
+                          // este postDelayed garantiza que la configuracion custom se aplique
+                          // una vez la vista de la pagina este medida y dibujada.
+                          //
+                          // NOTA: NO se reaplica dentro de frag.currentLocator.collect porque
+                          // el propio zoom dispara currentLocator en algunas versiones de Readium,
+                          // lo que resetearia el PhotoView mid-zoom. El re-aplicar por cambio de
+                          // pagina se hace en goToChapter() con otro postDelayed.
+                          Handler(Looper.getMainLooper()).postDelayed({
+                              frag.view?.let {
+                                  configurePhotoViewZoom(it)
+                                  applyComicNavigatorStyle(it)
+                              }
+                          }, 800)
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
-                          // Tambien reconfigurar cuando se carguen paginas nuevas.
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
@@ -1658,12 +1745,6 @@ jobs:
                                       saveSidecar(displayName, locator)
                                   }
                                   updateProgress(locator)
-                                  // Reaplicar configuracion de zoom al cambiar de pagina
-                                  // (cada pagina tiene su propio PhotoView).
-                                  frag.view?.let {
-                                      configurePhotoViewZoom(it)
-                                      applyComicNavigatorStyle(it)
-                                  }
                               }
                           }
                       } else {
@@ -1771,6 +1852,17 @@ jobs:
                   if (idx == cur && chapterIndex >= 0) return
                   nav.go(chapters[idx])
                   chapterIndex = idx
+                  // Re-aplicar la configuracion de zoom a la nueva pagina con un retardo.
+                  // Cada pagina de comic tiene su propio PhotoView que nace con los defaults
+                  // (8x maximo); este postDelayed le aplica los limites custom del usuario
+                  // sin pisar el zoom que el usuario ya tenga activo en la pagina anterior.
+                  // En EPUB no hace nada (no es ImageNavigatorFragment).
+                  Handler(Looper.getMainLooper()).postDelayed({
+                      (navigator as? ImageNavigatorFragment)?.view?.let {
+                          configurePhotoViewZoom(it)
+                          applyComicNavigatorStyle(it)
+                      }
+                  }, 300)
               }
           
               private fun flattenToc(
@@ -1838,6 +1930,9 @@ jobs:
                           topBar.visibility = View.VISIBLE
                           bottomBar.visibility = View.VISIBLE
                       }
+                      // Mostrar/ocultar secciones del panel segun el contexto
+                      // (biblioteca: solo GENERAL; lector EPUB: GENERAL+EPUB; lector Comic: GENERAL+COMIC).
+                      updateSettingsSections()
                       brightnessSeekBar.progress = (loadActiveBrightness() * 100).toInt().coerceIn(0, 100)
                       brightnessValue.text = "${brightnessSeekBar.progress}%"
                       fontSizeValue.text = "${((loadEpubFontSize() ?: 1.0) * 100).toInt()}%"
@@ -1888,6 +1983,9 @@ jobs:
                   // Restaurar brillo general y keep-screen al cerrar libro.
                   applyActiveBrightness()
                   applyKeepScreenToWindow()
+                  // Al cerrar el libro volvemos a contexto biblioteca: el panel de
+                  // ajustes volvera a mostrar solo GENERAL si se reabre.
+                  updateSettingsSections()
                   lifecycleScope.launch { reloadLibrary() }
               }
           
@@ -1953,12 +2051,14 @@ jobs:
               private fun applyEpubTheme(theme: Theme?) {
                   prefs().edit().putString("pref_epub_theme", theme?.name ?: "AUTO").apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubFont(family: String) {
                   prefs().edit().putString("pref_font_family", family).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
@@ -1974,54 +2074,63 @@ jobs:
               private fun applyEpubWeight(v: Double) {
                   prefs().edit().putFloat("pref_epub_weight", v.toFloat()).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubLineHeight(v: Double) {
                   prefs().edit().putFloat("pref_epub_line_height", v.toFloat()).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubMargin(v: Double) {
                   prefs().edit().putFloat("pref_epub_margin", v.toFloat()).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubJustify(align: String) {
                   prefs().edit().putString("pref_epub_align", align).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubIndent(v: Double) {
                   prefs().edit().putFloat("pref_epub_indent", v.toFloat()).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubParaSpacing(v: Double) {
                   prefs().edit().putFloat("pref_epub_para_spacing", v.toFloat()).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubPublisherStyles(v: Boolean) {
                   prefs().edit().putBoolean("pref_epub_pub_styles", v).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubReadingDir(dir: String) {
                   prefs().edit().putString("pref_epub_reading_dir", dir).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubColumn(col: String) {
                   prefs().edit().putString("pref_epub_column", col).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
               }
           
               // ===== Comic preferences =====
@@ -2029,11 +2138,13 @@ jobs:
               private fun applyComicZoomMax(v: Float) {
                   prefs().edit().putInt("pref_comic_zoom_max", v.toInt()).apply()
                   (navigator as? ImageNavigatorFragment)?.view?.let { configurePhotoViewZoom(it) }
+                  refreshChips()
               }
           
               private fun applyComicDoubleTap(v: Float) {
                   prefs().edit().putInt("pref_comic_double_tap", v.toInt()).apply()
                   (navigator as? ImageNavigatorFragment)?.view?.let { configurePhotoViewZoom(it) }
+                  refreshChips()
               }
           
               private fun applyComicViewMode(mode: String) {
@@ -2042,28 +2153,33 @@ jobs:
                       configurePhotoViewZoom(it)
                       applyComicNavigatorStyle(it)
                   }
+                  refreshChips()
               }
           
               private fun applyComicBgColor(c: Int) {
                   prefs().edit().putInt("pref_comic_bg_color", c).apply()
                   (navigator as? ImageNavigatorFragment)?.view?.let { applyComicNavigatorStyle(it) }
+                  refreshChips()
               }
           
               private fun applyComicReadingDir(dir: String) {
                   prefs().edit().putString("pref_comic_reading_dir", dir).apply()
                   (navigator as? ImageNavigatorFragment)?.view?.let { applyComicNavigatorStyle(it) }
+                  refreshChips()
               }
           
               private fun applyComicRotation(v: Boolean) {
                   prefs().edit().putBoolean("pref_comic_rotation", v).apply()
                   // Placeholder: rotación de dobles páginas no implementada todavía.
                   // Requiere detectar aspect ratio de cada imagen y rotar el PhotoView.
+                  refreshChips()
               }
           
               private fun applyComicBrightSep(v: Boolean) {
                   prefs().edit().putBoolean("pref_comic_bright_sep", v).apply()
                   // Reaplica el brillo activo (general o cómic según corresponda).
                   applyActiveBrightness()
+                  refreshChips()
               }
           
               private fun applyComicKeepScreen(v: Boolean) {
@@ -2071,6 +2187,7 @@ jobs:
                   (navigator as? ImageNavigatorFragment)?.view?.let { navView ->
                       navView.setKeepScreenOn(v)
                   }
+                  refreshChips()
               }
           
               /**
@@ -2094,6 +2211,7 @@ jobs:
               private fun applyLibraryColumns(cols: Int) {
                   prefs().edit().putInt("pref_library_columns", cols).apply()
                   updateLibraryColumns()
+                  refreshChips()
               }
           
               private fun updateLibraryColumns() {
@@ -2117,6 +2235,7 @@ jobs:
               private fun applyKeepScreen(v: Boolean) {
                   prefs().edit().putBoolean("pref_keep_screen", v).apply()
                   applyKeepScreenToWindow()
+                  refreshChips()
               }
           
               private fun applyKeepScreenToWindow() {
