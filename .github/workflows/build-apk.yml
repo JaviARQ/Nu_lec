@@ -115,7 +115,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 16
+                  versionCode = 17
                   versionName = "1.7"
               }
           
@@ -1662,13 +1662,13 @@ jobs:
               private fun applyTheme(theme: Theme?) {
                   prefs().edit().putString("pref_theme", theme?.name ?: "AUTO").apply()
                   applyGlobalTheme()
-                  navigator?.submitPreferences(currentEpubPreferences())
+                  (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
               }
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyFontFamily(family: String) {
                   prefs().edit().putString("pref_font_family", family).apply()
-                  navigator?.submitPreferences(currentEpubPreferences())
+                  (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
               }
           
               @OptIn(ExperimentalReadiumApi::class)
@@ -1677,7 +1677,7 @@ jobs:
                   val new = (cur + delta).coerceIn(0.5, 3.0)
                   prefs().edit().putFloat("pref_font_size", new.toFloat()).apply()
                   fontSizeValue.text = "${(new * 100).toInt()}%"
-                  navigator?.submitPreferences(currentEpubPreferences())
+                  (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
               }
           
               private fun applyBrightness(factor: Float) {
