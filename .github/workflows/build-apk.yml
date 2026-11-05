@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 26
-                  versionName = "3.0"
+                  versionCode = 27
+                  versionName = "3.1"
               }
           
               buildTypes {
@@ -264,6 +264,7 @@ jobs:
           
           import android.graphics.Bitmap
           import android.net.Uri
+          import org.readium.r2.shared.publication.Locator
           
           /**
            * Tipo de contenido de una biblioteca.
@@ -288,6 +289,20 @@ jobs:
               val bookCount: Int = 0,
               /** Solo para BOOK: extension del archivo (epub, cbz, cbr). */
               val extension: String = "epub",
+          )
+          
+          /**
+           * Highlight (cita/subrayado) de un libro EPUB.
+           * Se persiste en el sidecar JSON del libro, dentro del array `highlights`.
+           * El campo `version` del sidecar pasa de 1 (solo posicion) a 2 (posicion + citas).
+           */
+          data class Highlight(
+              val id: String,
+              val text: String,
+              val locator: Locator?,
+              val color: String = "yellow",
+              val note: String = "",
+              val createdAt: String
           )
           EOF
 
@@ -515,6 +530,7 @@ jobs:
           import android.view.WindowInsetsController
           import android.view.WindowManager
           import android.widget.Button
+          import android.widget.EditText
           import android.widget.FrameLayout
           import android.widget.ImageButton
           import android.widget.LinearLayout
@@ -536,6 +552,7 @@ jobs:
           import kotlinx.coroutines.delay
           import kotlinx.coroutines.launch
           import kotlinx.coroutines.withContext
+          import org.json.JSONArray
           import org.json.JSONObject
           import org.readium.r2.navigator.epub.EpubNavigatorFactory
           import org.readium.r2.navigator.epub.EpubNavigatorFragment
@@ -586,6 +603,7 @@ jobs:
               private lateinit var libraryRecycler: RecyclerView
               private lateinit var btnBackFolder: ImageButton
               private lateinit var btnRefreshLibrary: ImageButton
+              private lateinit var btnAllQuotes: ImageButton
               private lateinit var btnOpenSettings: ImageButton
               // Selector dual: Libros / Comics
               private lateinit var btnMediaEpub: ImageButton
@@ -648,6 +666,8 @@ jobs:
               private var chapters: List<Link> = emptyList()
               private var tableOfContents: List<Link> = emptyList()
               private var chapterIndex: Int = -1
+              /** Highlights del libro actualmente abierto (en memoria, persistidos en sidecar). */
+              private var currentHighlights: MutableList<Highlight> = mutableListOf()
           
               private val openEpubLauncher = registerForActivityResult(
                   ActivityResultContracts.OpenDocument()
@@ -752,6 +772,16 @@ jobs:
                       visibility = View.GONE
                   }
                   headerRow.addView(btnRefreshLibrary)
+                  // Botón "Todas las citas": abre diálogo con highlights de TODOS los libros
+                  // de la carpeta actual (solo visible en biblioteca de EPUB).
+                  btnAllQuotes = ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_quotes)
+                      background = null
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      setOnClickListener { lifecycleScope.launch { showAllHighlights() } }
+                      visibility = View.GONE
+                  }
+                  headerRow.addView(btnAllQuotes)
                   btnOpenSettings = ImageButton(this).apply {
                       setImageResource(R.drawable.ic_settings_dark)
                       background = null
@@ -885,6 +915,13 @@ jobs:
                       background = null
                       setPadding(dp(12), dp(12), dp(12), dp(12))
                       setOnClickListener { showChapterList() }
+                  })
+                  // Icono: citas/highlights del libro actual (entre índice y ajustes).
+                  topBar.addView(ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_highlights)
+                      background = null
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      setOnClickListener { showBookHighlights() }
                   })
                   topBar.addView(ImageButton(this).apply {
                       setImageResource(R.drawable.ic_settings)
@@ -1335,6 +1372,10 @@ jobs:
                   btnPickLibrary.visibility = if (hasLibrary) View.GONE else View.VISIBLE
                   btnOpenExternal.visibility = if (hasLibrary) View.GONE else View.VISIBLE
                   btnRefreshLibrary.visibility = if (hasLibrary) View.VISIBLE else View.GONE
+                  // Botón "Todas las citas": visible solo si hay biblioteca y es EPUB
+                  // (los comics no soportan highlights).
+                  btnAllQuotes.visibility =
+                      if (hasLibrary && currentMedia == LibraryMediaType.EPUB) View.VISIBLE else View.GONE
               }
           
               /** URI raiz de la biblioteca actualmente activa. */
@@ -1639,7 +1680,11 @@ jobs:
                       tableOfContents = publication.tableOfContents
                       chapterIndex = 0
           
-                      val initialLocator = loadSidecar(displayName) ?: loadLocator(displayName)
+                      val sidecarData = loadSidecar(displayName)
+                      val initialLocator = sidecarData?.first ?: loadLocator(displayName)
+                      // Cargar highlights del libro actual (vacío si el sidecar es v1 o no existe).
+                      currentHighlights.clear()
+                      currentHighlights.addAll(sidecarData?.second ?: emptyList())
           
                       libraryRoot.visibility = View.GONE
                       readerRoot.visibility = View.VISIBLE
@@ -1660,17 +1705,21 @@ jobs:
                               .commitNowAllowingStateLoss()
                           navigator = frag
                           topBarTitle.text = title
-                          // Configurar zoom potente en PhotoView despues de que la vista este lista.
-                          // PhotoView por defecto soporta pinch-to-zoom pero limitado a 8x.
-                          // Subimos el maximo a 10x y el minimo a 0.5x.
-                          // IMPORTANTE: NO se reaplica despues (con postDelayed ni en currentLocator.collect)
-                          // porque resetearia el zoom del usuario mientras lo esta usando.
-                          // Cada pagina nueva crea su propio PhotoView con los defaults; el usuario
-                          // tendra zoom maximo 8x por defecto si no llega a reconfigurarse.
-                          frag.view?.let {
-                              configurePhotoViewZoom(it)
-                              applyComicNavigatorStyle(it)
-                          }
+                          // Configurar zoom y estilo del navigator. Usamos un OnGlobalLayoutListener
+                          // para reaplicar la configuracion cuando PhotoViews nuevos se crean
+                          // (cada pagina de comic crea su propio PhotoView bajo demanda).
+                          // IMPORTANTE: configurar SOLO maximumScale/mediumScale/minimumScale
+                          // y scaleType, SIN resetear el zoom actual del usuario.
+                          val rootView = frag.view ?: navContainer
+                          rootView.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                              override fun onGlobalLayout() {
+                                  configurePhotoViewLimits(rootView)
+                                  applyComicNavigatorStyle(rootView)
+                              }
+                          })
+                          // Aplicacion inicial inmediata (por si la primera pagina ya esta creada).
+                          configurePhotoViewLimits(rootView)
+                          applyComicNavigatorStyle(rootView)
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
                           lifecycleScope.launch {
@@ -1680,7 +1729,7 @@ jobs:
                                   sidecarJob?.cancel()
                                   sidecarJob = appScope.launch {
                                       delay(2000)
-                                      saveSidecar(displayName, locator)
+                                      saveSidecar(displayName, locator, currentHighlights.toList())
                                   }
                                   updateProgress(locator)
                               }
@@ -1714,7 +1763,7 @@ jobs:
                                   sidecarJob?.cancel()
                                   sidecarJob = appScope.launch {
                                       delay(2000)
-                                      saveSidecar(displayName, locator)
+                                      saveSidecar(displayName, locator, currentHighlights.toList())
                                   }
                                   updateProgress(locator)
                               }
@@ -1728,40 +1777,46 @@ jobs:
           
               /**
                * Busca recursivamente cualquier PhotoView dentro de la vista del navigator
-               * y configura zoom maximo, zoom doble tap y minimo con valores hardcodeados (v22).
-               * Tambien aplica el modo de visualización (scaleType) según preferencia.
-               * PhotoView ya soporta pinch-to-zoom por defecto, pero estos limites amplian el rango util.
+               * y configura los LIMITES de zoom (maximo, medio, minimo) y el scaleType.
+               * NO resetea el zoom actual del usuario — respeta el zoom que tenga activo.
+               * Solo configura los limites si no estan ya configurados (para no interferir).
                *
                * Modos de visualización:
                *  - WIDTH:  FIT_CENTER — la imagen cabe entera, se ve toda, permite zoom
                *  - HEIGHT: CENTER_CROP — la imagen llena el alto, recorta los lados
                *  - FULL:   CENTER_CROP — la imagen llena toda la pantalla, recorta lados
                */
-              private fun configurePhotoViewZoom(root: View) {
+              private fun configurePhotoViewLimits(root: View) {
                   if (root is com.github.chrisbanes.photoview.PhotoView) {
                       runCatching {
-                          root.maximumScale = 10f
-                          root.mediumScale = 4f
-                          root.minimumScale = 0.5f
+                          // Solo configurar si los limites no estan ya puestos.
+                          if (root.maximumScale != 10f) {
+                              root.maximumScale = 10f
+                              root.mediumScale = 4f
+                              root.minimumScale = 0.5f
+                          }
                           val mode = loadComicViewMode()
-                          root.scaleType = when (mode) {
+                          val desiredScaleType = when (mode) {
                               "FULL" -> android.widget.ImageView.ScaleType.CENTER_CROP
                               "HEIGHT" -> android.widget.ImageView.ScaleType.CENTER_CROP
                               "WIDTH" -> android.widget.ImageView.ScaleType.FIT_CENTER
                               else -> android.widget.ImageView.ScaleType.FIT_CENTER
                           }
-                          // Resetear el zoom al minimo para que el scaleType tenga efecto visual.
-                          runCatching { root.scale = root.minimumScale }
-                          runCatching { root.setScale(root.minimumScale, false) }
+                          if (root.scaleType != desiredScaleType) {
+                              root.scaleType = desiredScaleType
+                          }
                       }
                       return
                   }
                   if (root is ViewGroup) {
                       for (i in 0 until root.childCount) {
-                          configurePhotoViewZoom(root.getChildAt(i))
+                          configurePhotoViewLimits(root.getChildAt(i))
                       }
                   }
               }
+          
+              /** Alias para compatibilidad (applyComicViewMode lo usa). */
+              private fun configurePhotoViewZoom(root: View) = configurePhotoViewLimits(root)
           
               private fun updateProgress(locator: Locator) {
                   val idx = chapters.indexOfFirst { it.url() == locator.href }
@@ -1892,8 +1947,10 @@ jobs:
                   sidecarJob?.cancel()
                   val book = currentBookName
                   val loc = lastLocator
+                  // Snapshot de highlights antes de limpiar para persistirlos junto al locator.
+                  val highlightsSnapshot = currentHighlights.toList()
                   if (book != null && loc != null) {
-                      appScope.launch { saveSidecar(book, loc) }
+                      appScope.launch { saveSidecar(book, loc, highlightsSnapshot) }
                   }
                   lastLocator = null
                   lastPageIndex = 0
@@ -1901,6 +1958,7 @@ jobs:
                   chapters = emptyList()
                   tableOfContents = emptyList()
                   chapterIndex = -1
+                  currentHighlights.clear()
                   navigator?.let {
                       try {
                           (it as? android.app.Fragment)?.let { frag ->
@@ -2314,28 +2372,72 @@ jobs:
                   }
               }
           
-              private suspend fun loadSidecar(bookName: String): Locator? {
+              private suspend fun loadSidecar(bookName: String): Pair<Locator?, List<Highlight>>? {
                   val uri = findSidecarUri(bookName) ?: return null
                   return withContext(Dispatchers.IO) {
                       val text = contentResolver.openInputStream(uri)?.use {
                           it.readBytes().toString(Charsets.UTF_8)
                       } ?: return@withContext null
-                      runCatching {
-                          Locator.fromJSON(JSONObject(text).getJSONObject("locator"))
-                      }.getOrNull()
+                      try {
+                          val json = JSONObject(text)
+                          val locator = runCatching {
+                              json.optJSONObject("locator")?.let { Locator.fromJSON(it) }
+                          }.getOrNull()
+                          // v2: array `highlights`. JSONs viejos (v1) no tienen el campo → array vacío.
+                          val highlights = mutableListOf<Highlight>()
+                          val arr = json.optJSONArray("highlights")
+                          if (arr != null) {
+                              for (i in 0 until arr.length()) {
+                                  val hj = arr.optJSONObject(i) ?: continue
+                                  jsonToHighlight(hj)?.let { highlights.add(it) }
+                              }
+                          }
+                          locator to highlights.toList()
+                      } catch (_: Throwable) {
+                          null
+                      }
                   }
               }
           
-              private suspend fun saveSidecar(bookName: String, locator: Locator) {
+              /** Convierte un JSONObject (de un elemento del array `highlights`) a Highlight. */
+              private fun jsonToHighlight(json: JSONObject): Highlight? = try {
+                  Highlight(
+                      id = json.getString("id"),
+                      text = json.getString("text"),
+                      locator = json.optJSONObject("locator")?.let {
+                          runCatching { Locator.fromJSON(it) }.getOrNull()
+                      },
+                      color = json.optString("color", "yellow"),
+                      note = json.optString("note", ""),
+                      createdAt = json.optString("createdAt", ""),
+                  )
+              } catch (_: Throwable) { null }
+          
+              /** Convierte un Highlight a JSONObject (para añadirlo al array `highlights`). */
+              private fun highlightToJson(h: Highlight): JSONObject = JSONObject().apply {
+                  put("id", h.id)
+                  put("text", h.text)
+                  h.locator?.let { put("locator", it.toJSON()) }
+                  put("color", h.color)
+                  put("note", h.note)
+                  put("createdAt", h.createdAt)
+              }
+          
+              private suspend fun saveSidecar(bookName: String, locator: Locator, highlights: List<Highlight> = emptyList()) {
                   val tree = bookTreeUri() ?: return
                   val folderUri = currentBookFolderUri ?: tree
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
+                  val arr = JSONArray()
+                  for (h in highlights) {
+                      arr.put(highlightToJson(h))
+                  }
                   val json = JSONObject().apply {
-                      put("version", 1)
+                      put("version", 2)
                       put("bookName", bookName)
                       put("locator", locator.toJSON())
                       put("updatedAt",
                           SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+                      put("highlights", arr)
                   }.toString(2)
                   withContext(Dispatchers.IO) {
                       val folderDocId = if (folderUri == tree)
@@ -2364,6 +2466,346 @@ jobs:
                       if (idx >= 0 && c.moveToFirst()) return c.getString(idx)
                   }
                   return uri.lastPathSegment
+              }
+          
+              // ===== HIGHLIGHTS (citas) =====
+          
+              /** Carga los highlights de un sidecar JSON (vacío si no existe o es v1). */
+              private suspend fun loadHighlights(bookName: String): List<Highlight> {
+                  return loadSidecar(bookName)?.second ?: emptyList()
+              }
+          
+              /**
+               * Persiste la lista de highlights en el sidecar JSON del libro.
+               * Reusa el último locator conocido para no perder la posición al
+               * añadir / eliminar una cita sin moverse en el libro.
+               */
+              private suspend fun saveHighlights(bookName: String, highlights: List<Highlight>) {
+                  val loc = lastLocator ?: return
+                  currentHighlights.clear()
+                  currentHighlights.addAll(highlights)
+                  saveSidecar(bookName, loc, currentHighlights.toList())
+              }
+          
+              /** Añade un highlight al libro actual y lo persiste. */
+              private suspend fun addHighlight(bookName: String, text: String, locator: Locator?, note: String = "") {
+                  val h = Highlight(
+                      id = "hl_${System.currentTimeMillis()}",
+                      text = text,
+                      locator = locator,
+                      color = "yellow",
+                      note = note,
+                      createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                  )
+                  currentHighlights.add(h)
+                  val loc = locator ?: lastLocator
+                  if (loc != null) {
+                      saveSidecar(bookName, loc, currentHighlights.toList())
+                  }
+              }
+          
+              /** Elimina un highlight por id y persiste el sidecar actualizado. */
+              private suspend fun removeHighlight(bookName: String, highlightId: String) {
+                  currentHighlights.removeAll { it.id == highlightId }
+                  val loc = lastLocator
+                  if (loc != null) {
+                      saveSidecar(bookName, loc, currentHighlights.toList())
+                  }
+              }
+          
+              /**
+               * Carga los highlights de TODOS los libros de la carpeta activa.
+               * Devuelve pares (bookName, highlight) para agrupar / mostrar.
+               * Solo se consideran archivos .json (sidecars) de la carpeta actual.
+               */
+              private suspend fun loadAllHighlights(): List<Pair<String, Highlight>> = withContext(Dispatchers.IO) {
+                  val result = mutableListOf<Pair<String, Highlight>>()
+                  val tree = activeTreeUri() ?: return@withContext emptyList()
+                  val folderUri = currentFolderUri ?: tree
+                  try {
+                      val folderDocId = if (folderUri == tree)
+                          DocumentsContract.getTreeDocumentId(tree)
+                      else
+                          runCatching { DocumentsContract.getDocumentId(folderUri) }.getOrNull()
+                            ?: DocumentsContract.getTreeDocumentId(tree)
+                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, folderDocId)
+                      contentResolver.query(children, arrayOf(
+                          Document.COLUMN_DOCUMENT_ID,
+                          Document.COLUMN_DISPLAY_NAME,
+                          Document.COLUMN_MIME_TYPE
+                      ), null, null, null)?.use { c ->
+                          val idIdx = c.getColumnIndexOrThrow(Document.COLUMN_DOCUMENT_ID)
+                          val nameIdx = c.getColumnIndexOrThrow(Document.COLUMN_DISPLAY_NAME)
+                          while (c.moveToNext()) {
+                              val name = c.getString(nameIdx) ?: continue
+                              // Solo sidecars .json generados por la app.
+                              if (!name.endsWith(".json")) continue
+                              val docId = c.getString(idIdx)
+                              val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
+                              val bookName = name.substringBeforeLast('.')
+                              val text = runCatching {
+                                  contentResolver.openInputStream(docUri)?.use {
+                                      it.readBytes().toString(Charsets.UTF_8)
+                                  }
+                              }.getOrNull() ?: continue
+                              try {
+                                  val json = JSONObject(text)
+                                  val arr = json.optJSONArray("highlights") ?: continue
+                                  for (i in 0 until arr.length()) {
+                                      val hj = arr.optJSONObject(i) ?: continue
+                                      jsonToHighlight(hj)?.let { result.add(bookName to it) }
+                                  }
+                              } catch (_: Throwable) { /* sidecar corrupto, ignorar */ }
+                          }
+                      }
+                  } catch (_: Throwable) { /* sin permisos / carpeta inaccesible */ }
+                  result
+              }
+          
+              // ===== UI: DIÁLOGOS DE CITAS =====
+          
+              /**
+               * Diálogo con la lista de citas del libro actual.
+               * Cada cita muestra: texto (máx 2 líneas), nota si existe, fecha.
+               * Botón "+" para añadir una cita manualmente (campo de texto).
+               * Botón "Eliminar" en cada cita para borrarla.
+               *
+               * NOTA: la captura directa de selección nativa del EpubNavigatorFragment
+               * requiere ActionMode.Callback y listeners experimentales de Readium que
+               * cambiaron en v3.x. Para v27 se implementa la opción simple de campo de texto
+               * (pegar/copiar) que es robusta y funciona con cualquier Readium 3.x.
+               */
+              private fun showBookHighlights() {
+                  val book = currentBookName ?: return
+                  val ctx = this
+                  val highlights = currentHighlights.toList()
+                  val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+                  // `var` para permitir que los lambdas internos hagan dismiss antes de crear el dialog.
+                  var dialog: AlertDialog? = null
+          
+                  val container = LinearLayout(ctx).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                  }
+                  // Botón + para añadir cita manualmente.
+                  val addBtn = Button(ctx).apply {
+                      text = "+ Añadir cita (pegar texto)"
+                      setAllCaps(false)
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      textSize = 11f
+                      setOnClickListener {
+                          dialog?.dismiss()
+                          showAddHighlightDialog(book)
+                      }
+                  }
+                  container.addView(addBtn)
+          
+                  if (highlights.isEmpty()) {
+                      val tv = TextView(ctx).apply {
+                          text = "No hay citas todavía."
+                          textSize = 13f
+                          setPadding(dp(8), dp(12), dp(8), dp(12))
+                          setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                      }
+                      container.addView(tv)
+                  } else {
+                      for (h in highlights) {
+                          val row = LinearLayout(ctx).apply {
+                              orientation = LinearLayout.VERTICAL
+                              setPadding(dp(12), dp(10), dp(12), dp(10))
+                              background = GradientDrawable().apply {
+                                  cornerRadius = 12 * density
+                                  setColor(if (isDark) 0xFF2A2A2A.toInt() else 0xFFEEEEEE.toInt())
+                              }
+                              val lp = LinearLayout.LayoutParams(
+                                  LinearLayout.LayoutParams.MATCH_PARENT,
+                                  LinearLayout.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(8) }
+                              layoutParams = lp
+                          }
+                          val textTv = TextView(ctx).apply {
+                              text = "\"${h.text}\""
+                              maxLines = 2
+                              ellipsize = android.text.TextUtils.TruncateAt.END
+                              textSize = 13f
+                              setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                              setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                          }
+                          row.addView(textTv)
+                          if (h.note.isNotEmpty()) {
+                              val noteTv = TextView(ctx).apply {
+                                  text = "Nota: ${h.note}"
+                                  textSize = 11f
+                                  maxLines = 2
+                                  ellipsize = android.text.TextUtils.TruncateAt.END
+                                  setTextColor(if (isDark) 0xFFB0B0B0.toInt() else 0xFF666666.toInt())
+                                  setPadding(0, dp(4), 0, 0)
+                              }
+                              row.addView(noteTv)
+                          }
+                          val dateTv = TextView(ctx).apply {
+                              text = h.createdAt
+                              textSize = 10f
+                              setTextColor(0xFF888888.toInt())
+                              setPadding(0, dp(4), 0, dp(6))
+                          }
+                          row.addView(dateTv)
+                          val deleteBtn = Button(ctx).apply {
+                              text = "Eliminar"
+                              setAllCaps(false)
+                              setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                              textSize = 11f
+                              setOnClickListener {
+                                  lifecycleScope.launch {
+                                      removeHighlight(book, h.id)
+                                      Toast.makeText(ctx, "Cita eliminada", Toast.LENGTH_SHORT).show()
+                                      dialog?.dismiss()
+                                      showBookHighlights()
+                                  }
+                              }
+                          }
+                          row.addView(deleteBtn)
+                          container.addView(row)
+                      }
+                  }
+          
+                  val scrollView = ScrollView(ctx).apply { addView(container) }
+                  dialog = AlertDialog.Builder(ctx)
+                      .setTitle("Citas: ${book.substringBeforeLast('.')}")
+                      .setView(scrollView)
+                      .setNegativeButton("Cerrar", null)
+                      .create()
+                  dialog?.show()
+              }
+          
+              /**
+               * Diálogo para crear una nueva cita manualmente.
+               * El usuario pega el texto a subrayar (campo multilinea) y una nota opcional.
+               * Se asocia al locator actual del libro (lastLocator).
+               */
+              private fun showAddHighlightDialog(book: String) {
+                  val ctx = this
+                  val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+                  val input = EditText(ctx).apply {
+                      hint = "Pega aquí el texto a subrayar"
+                      minLines = 3
+                      gravity = Gravity.TOP or Gravity.START
+                      setPadding(dp(12), dp(8), dp(12), dp(8))
+                  }
+                  val noteInput = EditText(ctx).apply {
+                      hint = "Nota (opcional)"
+                      setPadding(dp(12), dp(8), dp(12), dp(8))
+                  }
+                  val container = LinearLayout(ctx).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                      addView(input)
+                      addView(noteInput)
+                  }
+                  AlertDialog.Builder(ctx)
+                      .setTitle("Nueva cita")
+                      .setView(container)
+                      .setPositiveButton("Crear") { _, _ ->
+                          val text = input.text.toString().trim()
+                          val note = noteInput.text.toString().trim()
+                          if (text.isEmpty()) {
+                              Toast.makeText(ctx, "Texto vacío", Toast.LENGTH_SHORT).show()
+                              return@setPositiveButton
+                          }
+                          lifecycleScope.launch {
+                              addHighlight(book, text, lastLocator, note)
+                              Toast.makeText(ctx, "Cita añadida", Toast.LENGTH_SHORT).show()
+                              showBookHighlights()
+                          }
+                      }
+                      .setNegativeButton("Cancelar", null)
+                      .show()
+              }
+          
+              /**
+               * Diálogo con TODAS las citas de todos los libros de la carpeta actual,
+               * agrupadas por libro. Cada item muestra: texto, nota (si existe), fecha.
+               */
+              private suspend fun showAllHighlights() {
+                  val ctx = this@MainActivity
+                  val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+                  val all = loadAllHighlights()
+          
+                  val container = LinearLayout(ctx).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                  }
+                  if (all.isEmpty()) {
+                      val tv = TextView(ctx).apply {
+                          text = "No hay citas en la biblioteca."
+                          textSize = 13f
+                          setPadding(dp(8), dp(12), dp(8), dp(12))
+                          setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                      }
+                      container.addView(tv)
+                  } else {
+                      val grouped = all.groupBy { it.first }
+                      for ((book, items) in grouped) {
+                          val headerTv = TextView(ctx).apply {
+                              text = "📖 ${book.substringBeforeLast('.')}"
+                              textSize = 12f
+                              setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                              setTextColor(ACCENT)
+                              setPadding(dp(8), dp(10), dp(8), dp(4))
+                          }
+                          container.addView(headerTv)
+                          for ((_, h) in items) {
+                              val row = LinearLayout(ctx).apply {
+                                  orientation = LinearLayout.VERTICAL
+                                  setPadding(dp(12), dp(10), dp(12), dp(10))
+                                  background = GradientDrawable().apply {
+                                      cornerRadius = 10 * density
+                                      setColor(if (isDark) 0xFF2A2A2A.toInt() else 0xFFEEEEEE.toInt())
+                                  }
+                                  val lp = LinearLayout.LayoutParams(
+                                      LinearLayout.LayoutParams.MATCH_PARENT,
+                                      LinearLayout.LayoutParams.WRAP_CONTENT
+                                  ).apply { bottomMargin = dp(6) }
+                                  layoutParams = lp
+                              }
+                              val textTv = TextView(ctx).apply {
+                                  text = "\"${h.text}\""
+                                  maxLines = 2
+                                  ellipsize = android.text.TextUtils.TruncateAt.END
+                                  textSize = 13f
+                                  setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                                  setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                              }
+                              row.addView(textTv)
+                              if (h.note.isNotEmpty()) {
+                                  val noteTv = TextView(ctx).apply {
+                                      text = "Nota: ${h.note}"
+                                      textSize = 11f
+                                      maxLines = 2
+                                      ellipsize = android.text.TextUtils.TruncateAt.END
+                                      setTextColor(if (isDark) 0xFFB0B0B0.toInt() else 0xFF666666.toInt())
+                                      setPadding(0, dp(4), 0, 0)
+                                  }
+                                  row.addView(noteTv)
+                              }
+                              val dateTv = TextView(ctx).apply {
+                                  text = h.createdAt
+                                  textSize = 10f
+                                  setTextColor(0xFF888888.toInt())
+                                  setPadding(0, dp(4), 0, 0)
+                              }
+                              row.addView(dateTv)
+                              container.addView(row)
+                          }
+                      }
+                  }
+          
+                  val scrollView = ScrollView(ctx).apply { addView(container) }
+                  AlertDialog.Builder(ctx)
+                      .setTitle("Todas las citas (${all.size})")
+                      .setView(scrollView)
+                      .setNegativeButton("Cerrar", null)
+                      .show()
               }
           }
           EOF
@@ -2455,6 +2897,24 @@ jobs:
               android:viewportWidth="24" android:viewportHeight="24">
               <path android:fillColor="#FFFFFFFF"
                   android:pathData="M6,6l10,6L6,18zM16,6h2v12h-2z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_highlights.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFFFF"
+                  android:pathData="M5,4v8c0,3.31 2.69,6 6,6s6,-2.69 6,-6V4h-2v8c0,2.21 -1.79,4 -4,4s-4,-1.79 -4,-4V4H5zM3,20v2h16v-2H3z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_quotes.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FF424242"
+                  android:pathData="M6,17h3l2,-4V7H5v6h3zM14,17h3l2,-4V7h-6v6h3z"/>
           </vector>
           EOF
 
