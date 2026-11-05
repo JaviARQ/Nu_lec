@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 27
-                  versionName = "3.1"
+                  versionCode = 28
+                  versionName = "3.2"
               }
           
               buildTypes {
@@ -522,7 +522,10 @@ jobs:
           import android.provider.DocumentsContract
           import android.provider.DocumentsContract.Document
           import android.provider.OpenableColumns
+          import android.view.ActionMode
           import android.view.Gravity
+          import android.view.Menu
+          import android.view.MenuItem
           import android.view.MotionEvent
           import android.view.View
           import android.view.ViewGroup
@@ -557,6 +560,10 @@ jobs:
           import org.readium.r2.navigator.epub.EpubNavigatorFactory
           import org.readium.r2.navigator.epub.EpubNavigatorFragment
           import org.readium.r2.navigator.epub.EpubPreferences
+          import org.readium.r2.navigator.DecorableNavigator
+          import org.readium.r2.navigator.Decoration
+          import org.readium.r2.navigator.SelectableNavigator
+          import org.readium.r2.navigator.Selection
           import org.readium.r2.navigator.image.ImageNavigatorFragment
           import org.readium.r2.navigator.preferences.FontFamily
           import org.readium.r2.navigator.preferences.TextAlign
@@ -634,6 +641,8 @@ jobs:
               private lateinit var chapterText: TextView
               private lateinit var btnPrevChapter: ImageButton
               private lateinit var btnNextChapter: ImageButton
+              /** Botón de citas en la top bar del lector (solo visible en EPUB). */
+              private lateinit var btnHighlights: ImageButton
           
               // ----- Vistas: PANEL AJUSTES -----
               // settingsPanel es el ScrollView (overlay), settingsContent es la tarjeta interior.
@@ -917,12 +926,14 @@ jobs:
                       setOnClickListener { showChapterList() }
                   })
                   // Icono: citas/highlights del libro actual (entre índice y ajustes).
-                  topBar.addView(ImageButton(this).apply {
+                  // v28: oculto en lector Comic (los comics no soportan highlights).
+                  btnHighlights = ImageButton(this).apply {
                       setImageResource(R.drawable.ic_highlights)
                       background = null
                       setPadding(dp(12), dp(12), dp(12), dp(12))
                       setOnClickListener { showBookHighlights() }
-                  })
+                  }
+                  topBar.addView(btnHighlights)
                   topBar.addView(ImageButton(this).apply {
                       setImageResource(R.drawable.ic_settings)
                       background = null
@@ -1367,6 +1378,17 @@ jobs:
                   sectionComic.visibility = if (readerVisible && isComic) View.VISIBLE else View.GONE
               }
           
+              /**
+               * v28: actualiza la visibilidad de los controles del lector segun el
+               * tipo de navigator. El botón de citas (btnHighlights) solo es visible
+               * en EPUB; los comics no soportan highlights.
+               * Llamado tras asignar `navigator` en openInternal y al cerrar libro.
+               */
+              private fun updateReaderControls() {
+                  val isEpub = navigator is EpubNavigatorFragment
+                  btnHighlights.visibility = if (isEpub) View.VISIBLE else View.GONE
+              }
+          
               private fun refreshLibraryButtons() {
                   val hasLibrary = activeTreeUri() != null
                   btnPickLibrary.visibility = if (hasLibrary) View.GONE else View.VISIBLE
@@ -1705,21 +1727,30 @@ jobs:
                               .commitNowAllowingStateLoss()
                           navigator = frag
                           topBarTitle.text = title
-                          // Configurar zoom y estilo del navigator. Usamos un OnGlobalLayoutListener
-                          // para reaplicar la configuracion cuando PhotoViews nuevos se crean
-                          // (cada pagina de comic crea su propio PhotoView bajo demanda).
-                          // IMPORTANTE: configurar SOLO maximumScale/mediumScale/minimumScale
-                          // y scaleType, SIN resetear el zoom actual del usuario.
+                          // v28: ocultar botón de citas en lector Comic.
+                          updateReaderControls()
+                          // v28: reemplazamos OnGlobalLayoutListener (que NO encontraba
+                          // PhotoViews nuevos bajo demanda) por polling cada 250ms durante
+                          // 3 segundos. Así, cuando una nueva página de comic se cargue
+                          // (incluso al hacer swipe), se configurarán sus límites de zoom y
+                          // su estilo. PhotoView crea los fragments bajo demanda.
+                          // IMPORTANTE: configurePhotoViewLimits NO resetea el zoom del
+                          // usuario; solo configura maxScale/medScale/minScale y scaleType
+                          // si no están ya puestos.
                           val rootView = frag.view ?: navContainer
-                          rootView.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
-                              override fun onGlobalLayout() {
+                          val handler = Handler(Looper.getMainLooper())
+                          var pollCount = 0
+                          val pollRunnable = object : Runnable {
+                              override fun run() {
                                   configurePhotoViewLimits(rootView)
                                   applyComicNavigatorStyle(rootView)
+                                  pollCount++
+                                  if (pollCount < 12) {  // 12 * 250ms = 3 segundos
+                                      handler.postDelayed(this, 250)
+                                  }
                               }
-                          })
-                          // Aplicacion inicial inmediata (por si la primera pagina ya esta creada).
-                          configurePhotoViewLimits(rootView)
-                          applyComicNavigatorStyle(rootView)
+                          }
+                          handler.postDelayed(pollRunnable, 250)
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
                           lifecycleScope.launch {
@@ -1736,6 +1767,8 @@ jobs:
                           }
                       } else {
                           // EPUB: EpubNavigatorFactory con preferencias y PaginationListener.
+                          // v28: pasamos Configuration con selectionActionModeCallback para añadir
+                          // la opción "Crear cita" al menú contextual nativo de selección de texto.
                           val prefs = currentEpubPreferences()
                           val factory = EpubNavigatorFactory(publication = publication)
                           supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
@@ -1747,6 +1780,9 @@ jobs:
                                       lastTotalPages = totalPages
                                   }
                               },
+                              configuration = EpubNavigatorFactory.Configuration {
+                                  selectionActionModeCallback = createSelectionActionModeCallback()
+                              },
                           )
                           val frag = supportFragmentManager.fragmentFactory
                               .instantiate(classLoader, EpubNavigatorFragment::class.java.name)
@@ -1756,6 +1792,14 @@ jobs:
                               .commitNowAllowingStateLoss()
                           navigator = frag
                           topBarTitle.text = title
+                          // v28: el botón de citas solo es visible en EPUB.
+                          updateReaderControls()
+                          // v28: aplicar decorations de highlights existentes con un pequeño
+                          // retardo para que el navigator esté listo.
+                          lifecycleScope.launch {
+                              delay(300)
+                              applyAllDecorations()
+                          }
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
@@ -1980,6 +2024,8 @@ jobs:
                   settingsVisible = false
                   topBar.visibility = View.GONE
                   bottomBar.visibility = View.GONE
+                  // v28: ocultar botón de citas al cerrar libro.
+                  updateReaderControls()
                   readerRoot.visibility = View.GONE
                   libraryRoot.visibility = View.VISIBLE
                   // Restaurar brillo general y keep-screen al cerrar libro.
@@ -2143,6 +2189,84 @@ jobs:
                   view.setBackgroundColor(bg)
                   view.layoutDirection = if (loadComicReadingDir() == "RTL")
                       View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
+              }
+          
+              // ===== v28: Selección nativa + highlights visuales =====
+          
+              /**
+               * v28: ActionMode.Callback personalizado para el menú contextual nativo
+               * de Android que aparece al seleccionar texto en el EpubNavigatorFragment.
+               * Añade una opción "Crear cita" que crea un highlight a partir del texto
+               * seleccionado por el usuario.
+               */
+              private fun createSelectionActionModeCallback(): ActionMode.Callback {
+                  val MENU_CREATE_HIGHLIGHT = 0x1001
+                  return object : ActionMode.Callback {
+                      override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                          menu.add(0, MENU_CREATE_HIGHLIGHT, 0, "Crear cita")
+                          return true
+                      }
+          
+                      override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean = false
+          
+                      override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                          if (item.itemId == MENU_CREATE_HIGHLIGHT) {
+                              lifecycleScope.launch { createHighlightFromSelection() }
+                              mode.finish()
+                              return true
+                          }
+                          return false
+                      }
+          
+                      override fun onDestroyActionMode(mode: ActionMode) {}
+                  }
+              }
+          
+              /**
+               * v28: crea un highlight a partir de la selección nativa actual del EPUB.
+               * Obtiene la Selection vía currentSelection(), crea el Highlight, lo persiste
+               * en el sidecar JSON, aplica el decoration visual y limpia la selección.
+               */
+              private suspend fun createHighlightFromSelection() {
+                  val nav = navigator as? EpubNavigatorFragment ?: return
+                  val selection = nav.currentSelection() ?: return
+                  val text = selection.locator.text?.highlight
+                      ?: selection.locator.text?.before
+                      ?: ""
+                  if (text.isBlank()) return
+                  val locator = selection.locator
+                  val hl = Highlight(
+                      id = "hl_${System.currentTimeMillis()}",
+                      text = text,
+                      locator = locator,
+                      color = "yellow",
+                      note = "",
+                      createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                  )
+                  currentHighlights.add(hl)
+                  val book = currentBookName ?: return
+                  appScope.launch { saveHighlights(book, currentHighlights.toList()) }
+                  applyAllDecorations()
+                  nav.clearSelection()
+                  Toast.makeText(this, "Cita creada", Toast.LENGTH_SHORT).show()
+              }
+          
+              /**
+               * v28: aplica TODOS los highlights actuales como decorations visibles
+               * en el EPUB (resaltado amarillo semitransparente). Llamado al abrir el
+               * libro y tras crear/eliminar citas.
+               */
+              private suspend fun applyAllDecorations() {
+                  val nav = navigator as? EpubNavigatorFragment ?: return
+                  val decorations = currentHighlights.mapNotNull { hl ->
+                      val loc = hl.locator ?: return@mapNotNull null
+                      Decoration(
+                          id = hl.id,
+                          locator = loc,
+                          style = Decoration.Style.Highlight(tint = 0x80FFFF00.toInt())
+                      )
+                  }
+                  nav.applyDecorations(decorations, "highlights")
               }
           
               // ===== General (library + keep screen) =====
@@ -2567,13 +2691,12 @@ jobs:
               /**
                * Diálogo con la lista de citas del libro actual.
                * Cada cita muestra: texto (máx 2 líneas), nota si existe, fecha.
-               * Botón "+" para añadir una cita manualmente (campo de texto).
+               * Pulsar una cita navega al punto del libro donde está.
                * Botón "Eliminar" en cada cita para borrarla.
                *
-               * NOTA: la captura directa de selección nativa del EpubNavigatorFragment
-               * requiere ActionMode.Callback y listeners experimentales de Readium que
-               * cambiaron en v3.x. Para v27 se implementa la opción simple de campo de texto
-               * (pegar/copiar) que es robusta y funciona con cualquier Readium 3.x.
+               * v28: la captura de citas se hace ahora desde el menú contextual nativo
+               * de Android al seleccionar texto en el EPUB (createHighlightFromSelection).
+               * Se ha eliminado el botón "+" que abría el diálogo manual de pegado.
                */
               private fun showBookHighlights() {
                   val book = currentBookName ?: return
@@ -2587,22 +2710,12 @@ jobs:
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(16), dp(8), dp(16), dp(8))
                   }
-                  // Botón + para añadir cita manualmente.
-                  val addBtn = Button(ctx).apply {
-                      text = "+ Añadir cita (pegar texto)"
-                      setAllCaps(false)
-                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                      textSize = 11f
-                      setOnClickListener {
-                          dialog?.dismiss()
-                          showAddHighlightDialog(book)
-                      }
-                  }
-                  container.addView(addBtn)
+                  // v28: eliminado el botón "+" de añadir cita manual; las citas se
+                  // crean ahora desde el menú contextual de selección nativa.
           
                   if (highlights.isEmpty()) {
                       val tv = TextView(ctx).apply {
-                          text = "No hay citas todavía."
+                          text = "No hay citas todavía. Selecciona texto en el libro para crear una."
                           textSize = 13f
                           setPadding(dp(8), dp(12), dp(8), dp(12))
                           setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
@@ -2622,6 +2735,21 @@ jobs:
                                   LinearLayout.LayoutParams.WRAP_CONTENT
                               ).apply { bottomMargin = dp(8) }
                               layoutParams = lp
+                              // v28: pulsar la cita navega al punto del libro.
+                              setOnClickListener {
+                                  val nav = navigator as? EpubNavigatorFragment
+                                  if (nav == null) {
+                                      Toast.makeText(ctx, "Abre el libro primero para ir a la cita", Toast.LENGTH_SHORT).show()
+                                      return@setOnClickListener
+                                  }
+                                  val loc = h.locator
+                                  if (loc == null) {
+                                      Toast.makeText(ctx, "Cita sin posición válida", Toast.LENGTH_SHORT).show()
+                                      return@setOnClickListener
+                                  }
+                                  dialog?.dismiss()
+                                  lifecycleScope.launch { nav.go(loc) }
+                              }
                           }
                           val textTv = TextView(ctx).apply {
                               text = "\"${h.text}\""
@@ -2658,6 +2786,8 @@ jobs:
                               setOnClickListener {
                                   lifecycleScope.launch {
                                       removeHighlight(book, h.id)
+                                      // v28: refrescar decorations visuales tras eliminar.
+                                      applyAllDecorations()
                                       Toast.makeText(ctx, "Cita eliminada", Toast.LENGTH_SHORT).show()
                                       dialog?.dismiss()
                                       showBookHighlights()
@@ -2679,57 +2809,15 @@ jobs:
               }
           
               /**
-               * Diálogo para crear una nueva cita manualmente.
-               * El usuario pega el texto a subrayar (campo multilinea) y una nota opcional.
-               * Se asocia al locator actual del libro (lastLocator).
-               */
-              private fun showAddHighlightDialog(book: String) {
-                  val ctx = this
-                  val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
-                  val input = EditText(ctx).apply {
-                      hint = "Pega aquí el texto a subrayar"
-                      minLines = 3
-                      gravity = Gravity.TOP or Gravity.START
-                      setPadding(dp(12), dp(8), dp(12), dp(8))
-                  }
-                  val noteInput = EditText(ctx).apply {
-                      hint = "Nota (opcional)"
-                      setPadding(dp(12), dp(8), dp(12), dp(8))
-                  }
-                  val container = LinearLayout(ctx).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(dp(16), dp(8), dp(16), dp(8))
-                      addView(input)
-                      addView(noteInput)
-                  }
-                  AlertDialog.Builder(ctx)
-                      .setTitle("Nueva cita")
-                      .setView(container)
-                      .setPositiveButton("Crear") { _, _ ->
-                          val text = input.text.toString().trim()
-                          val note = noteInput.text.toString().trim()
-                          if (text.isEmpty()) {
-                              Toast.makeText(ctx, "Texto vacío", Toast.LENGTH_SHORT).show()
-                              return@setPositiveButton
-                          }
-                          lifecycleScope.launch {
-                              addHighlight(book, text, lastLocator, note)
-                              Toast.makeText(ctx, "Cita añadida", Toast.LENGTH_SHORT).show()
-                              showBookHighlights()
-                          }
-                      }
-                      .setNegativeButton("Cancelar", null)
-                      .show()
-              }
-          
-              /**
                * Diálogo con TODAS las citas de todos los libros de la carpeta actual,
                * agrupadas por libro. Cada item muestra: texto, nota (si existe), fecha.
+               * v28: pulsar una cita navega a ella si el libro correspondiente está abierto.
                */
               private suspend fun showAllHighlights() {
                   val ctx = this@MainActivity
                   val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
                   val all = loadAllHighlights()
+                  var dialog: AlertDialog? = null
           
                   val container = LinearLayout(ctx).apply {
                       orientation = LinearLayout.VERTICAL
@@ -2767,6 +2855,22 @@ jobs:
                                       LinearLayout.LayoutParams.WRAP_CONTENT
                                   ).apply { bottomMargin = dp(6) }
                                   layoutParams = lp
+                                  // v28: pulsar la cita navega si el libro está abierto.
+                                  setOnClickListener {
+                                      val nav = navigator as? EpubNavigatorFragment
+                                      val openedBook = currentBookName
+                                      if (nav == null || openedBook != book) {
+                                          Toast.makeText(ctx, "Abre el libro primero para ir a la cita", Toast.LENGTH_SHORT).show()
+                                          return@setOnClickListener
+                                      }
+                                      val loc = h.locator
+                                      if (loc == null) {
+                                          Toast.makeText(ctx, "Cita sin posición válida", Toast.LENGTH_SHORT).show()
+                                          return@setOnClickListener
+                                      }
+                                      dialog?.dismiss()
+                                      lifecycleScope.launch { nav.go(loc) }
+                                  }
                               }
                               val textTv = TextView(ctx).apply {
                                   text = "\"${h.text}\""
@@ -2801,11 +2905,12 @@ jobs:
                   }
           
                   val scrollView = ScrollView(ctx).apply { addView(container) }
-                  AlertDialog.Builder(ctx)
+                  dialog = AlertDialog.Builder(ctx)
                       .setTitle("Todas las citas (${all.size})")
                       .setView(scrollView)
                       .setNegativeButton("Cerrar", null)
-                      .show()
+                      .create()
+                  dialog?.show()
               }
           }
           EOF
