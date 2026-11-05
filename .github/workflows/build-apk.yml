@@ -98,7 +98,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 28
+                  versionCode = 29
                   versionName = "3.2"
               }
           
@@ -1767,8 +1767,8 @@ jobs:
                           }
                       } else {
                           // EPUB: EpubNavigatorFactory con preferencias y PaginationListener.
-                          // v28: pasamos Configuration con selectionActionModeCallback para añadir
-                          // la opción "Crear cita" al menú contextual nativo de selección de texto.
+                          // v28: pasamos EpubNavigatorFragment.Configuration (no Factory.Configuration)
+                          // con selectionActionModeCallback para añadir "Crear cita" al menú nativo.
                           val prefs = currentEpubPreferences()
                           val factory = EpubNavigatorFactory(publication = publication)
                           supportFragmentManager.fragmentFactory = factory.createFragmentFactory(
@@ -1780,7 +1780,7 @@ jobs:
                                       lastTotalPages = totalPages
                                   }
                               },
-                              configuration = EpubNavigatorFactory.Configuration {
+                              configuration = EpubNavigatorFragment.Configuration {
                                   selectionActionModeCallback = createSelectionActionModeCallback()
                               },
                           )
