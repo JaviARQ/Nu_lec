@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 30
-                  versionName = "3.3"
+                  versionCode = 31
+                  versionName = "3.4"
               }
           
               buildTypes {
@@ -742,22 +742,21 @@ jobs:
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(24), dp(48), dp(24), dp(24))
                   }
-                  // Fila de cabecera: título "Nu_lec" + botón actualizar a la derecha.
-                  val headerRow = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      gravity = Gravity.CENTER_VERTICAL
-                  }
+                  // v31: título en su propia fila para que no se trunque.
                   headerTitle = TextView(this).apply {
                       text = "Nu_lec"
                       textSize = 34f
                       setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
                       letterSpacing = 0.01f
-                      setPadding(dp(4), 0, 0, 0)
-                      layoutParams = LinearLayout.LayoutParams(
-                          0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
-                      )
+                      setPadding(dp(4), 0, 0, dp(4))
                   }
-                  headerRow.addView(headerTitle)
+                  libraryRoot.addView(headerTitle)
+                  // Fila de iconos: selector libros/comics + refresh + citas + ajustes.
+                  val headerRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(2), 0, 0, dp(4))
+                  }
                   // Selector dual de bibliotecas: icono libro + icono comic.
                   btnMediaEpub = ImageButton(this).apply {
                       setImageResource(R.drawable.ic_media_book)
@@ -2507,30 +2506,53 @@ jobs:
                   }
               }
           
+              // v31: en vez de tap centro (que interfiere con zoom y selección de texto),
+              // el toggle de overlays se hace con SWIPE DOWN desde el borde superior.
+              // El usuario desliza el dedo de arriba hacia abajo para mostrar/ocultar menús.
+              private var swipeStartY = -1f
+              private var swipeStartX = -1f
+          
               override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-                  if (ev.action == MotionEvent.ACTION_DOWN) {
-                      // Cerrar panel de ajustes al tocar fuera (funciona en library y reader).
-                      if (settingsVisible) {
-                          val panelLoc = IntArray(2)
-                          settingsContent.getLocationOnScreen(panelLoc)
-                          val inPanel = ev.x >= panelLoc[0] && ev.x <= panelLoc[0] + settingsContent.width &&
-                              ev.y >= panelLoc[1] && ev.y <= panelLoc[1] + settingsContent.height
-                          if (!inPanel) {
-                              toggleSettingsPanel()
-                              return true
+                  when (ev.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          // Cerrar panel de ajustes al tocar fuera (funciona en library y reader).
+                          if (settingsVisible) {
+                              val panelLoc = IntArray(2)
+                              settingsContent.getLocationOnScreen(panelLoc)
+                              val inPanel = ev.x >= panelLoc[0] && ev.x <= panelLoc[0] + settingsContent.width &&
+                                  ev.y >= panelLoc[1] && ev.y <= panelLoc[1] + settingsContent.height
+                              if (!inPanel) {
+                                  toggleSettingsPanel()
+                                  return true
+                              }
                           }
-                          return super.dispatchTouchEvent(ev)
+                          // Registrar el inicio del swipe si está en el borde superior.
+                          if (readerRoot.visibility == View.VISIBLE && !settingsVisible) {
+                              val h = resources.displayMetrics.heightPixels
+                              // Solo iniciar swipe si empieza en el 8% superior de la pantalla.
+                              if (ev.y < h * 0.08f) {
+                                  swipeStartY = ev.y
+                                  swipeStartX = ev.x
+                              } else {
+                                  swipeStartY = -1f
+                              }
+                          }
                       }
-                      // Toggle reader overlay al tocar centro (solo en lector).
-                      if (readerRoot.visibility == View.VISIBLE) {
-                          val w = resources.displayMetrics.widthPixels
-                          val h = resources.displayMetrics.heightPixels
-                          val inCenterX = ev.x in (w * 0.30f)..(w * 0.70f)
-                          val inCenterY = ev.y in (h * 0.30f)..(h * 0.70f)
-                          if (inCenterX && inCenterY) {
-                              toggleReaderOverlay()
-                              return true
+                      MotionEvent.ACTION_MOVE -> {
+                          // Si hay un swipe en curso desde el borde superior y baja >100dp,
+                          // toggle overlays y cancelar swipe.
+                          if (swipeStartY >= 0 && readerRoot.visibility == View.VISIBLE && !settingsVisible) {
+                              val deltaY = ev.y - swipeStartY
+                              val threshold = 100 * density
+                              if (deltaY > threshold) {
+                                  toggleReaderOverlay()
+                                  swipeStartY = -1f
+                                  return true
+                              }
                           }
+                      }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                          swipeStartY = -1f
                       }
                   }
                   return super.dispatchTouchEvent(ev)
