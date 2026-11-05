@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 24
-                  versionName = "2.3"
+                  versionCode = 25
+                  versionName = "2.4"
               }
           
               buildTypes {
@@ -970,16 +970,17 @@ jobs:
                   }
                   settingsContent = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(16), dp(20), dp(16), dp(20))
-                      // LayoutParams: panel lateral derecho, ~78% del ancho, alineado arriba.
+                      setPadding(dp(12), dp(14), dp(12), dp(14))
+                      // LayoutParams: panel lateral derecho, ~70% del ancho, alineado arriba.
+                      // Compacto: topMargin reducido para no salir de pantalla con barras visibles.
                         layoutParams = FrameLayout.LayoutParams(
-                            (resources.displayMetrics.widthPixels * 0.78f).toInt(),
+                            (resources.displayMetrics.widthPixels * 0.72f).toInt(),
                             FrameLayout.LayoutParams.WRAP_CONTENT
                         ).apply {
                             gravity = Gravity.TOP or Gravity.END
-                            topMargin = dp(48)
-                            marginEnd = dp(8)
-                            marginStart = dp(8)
+                            topMargin = dp(8)
+                            marginEnd = dp(6)
+                            marginStart = dp(6)
                         }
                     }
                   settingsPanel.addView(settingsContent)
@@ -990,7 +991,7 @@ jobs:
                           textSize = 10f
                           letterSpacing = 0.10f
                           setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                          setPadding(dp(2), dp(10), 0, dp(4))
+                          setPadding(dp(2), dp(6), 0, dp(2))
                       }
                       sectionLabels.add(tv)
                       return tv
@@ -998,9 +999,9 @@ jobs:
                   fun labelSmall(txt: String): TextView {
                       val tv = TextView(this).apply {
                           text = txt
-                          textSize = 11f
+                          textSize = 10f
                           setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                          setPadding(dp(2), dp(6), 0, dp(2))
+                          setPadding(dp(2), dp(4), 0, dp(1))
                           layoutParams = LinearLayout.LayoutParams(
                               LinearLayout.LayoutParams.MATCH_PARENT,
                               LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1015,26 +1016,23 @@ jobs:
                       layoutParams = LinearLayout.LayoutParams(
                           LinearLayout.LayoutParams.MATCH_PARENT,
                           LinearLayout.LayoutParams.WRAP_CONTENT
-                      ).apply { bottomMargin = dp(2) }
+                      ).apply { bottomMargin = dp(1) }
                   }
                   fun chip(label: String, activeWhen: (() -> Boolean)? = null, onClick: (View) -> Unit): Button {
                       val b = Button(this).apply {
                           text = label
                           setAllCaps(false)
-                          textSize = 11f
+                          textSize = 10f
                           setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                          setPadding(dp(6), dp(6), dp(6), dp(6))
+                          setPadding(dp(4), dp(4), dp(4), dp(4))
                           setOnClickListener(onClick)
                           layoutParams = LinearLayout.LayoutParams(
                               0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
                           ).apply {
-                              marginEnd = dp(3)
+                              marginEnd = dp(2)
                               marginStart = dp(0)
                           }
                       }
-                      // Guardamos la lambda que decide si el chip está activo, para pintarlo
-                      // resaltado en applyGlobalTheme/refreshChips. Si es null, el chip nunca
-                      // se resalta (es un botón de acción, no de estado).
                       if (activeWhen != null) b.tag = activeWhen
                       allChips.add(b)
                       return b
@@ -1645,27 +1643,15 @@ jobs:
                           topBarTitle.text = title
                           // Configurar zoom potente en PhotoView despues de que la vista este lista.
                           // PhotoView por defecto soporta pinch-to-zoom pero limitado a 8x.
-                          // Subimos el maximo segun preferencias (por defecto 10x) y el minimo a 0.5x.
+                          // Subimos el maximo a 10x y el minimo a 0.5x.
+                          // IMPORTANTE: NO se reaplica despues (con postDelayed ni en currentLocator.collect)
+                          // porque resetearia el zoom del usuario mientras lo esta usando.
+                          // Cada pagina nueva crea su propio PhotoView con los defaults; el usuario
+                          // tendra zoom maximo 8x por defecto si no llega a reconfigurarse.
                           frag.view?.let {
                               configurePhotoViewZoom(it)
                               applyComicNavigatorStyle(it)
                           }
-                          // Re-aplicar la configuracion de zoom con un pequeno retardo, despues
-                          // de que la primera pagina se renderice. Cada pagina de comic tiene su
-                          // propio PhotoView y nace con los defaults de PhotoView (8x maximo);
-                          // este postDelayed garantiza que la configuracion custom se aplique
-                          // una vez la vista de la pagina este medida y dibujada.
-                          //
-                          // NOTA: NO se reaplica dentro de frag.currentLocator.collect porque
-                          // el propio zoom dispara currentLocator en algunas versiones de Readium,
-                          // lo que resetearia el PhotoView mid-zoom. El re-aplicar por cambio de
-                          // pagina se hace en goToChapter() con otro postDelayed.
-                          Handler(Looper.getMainLooper()).postDelayed({
-                              frag.view?.let {
-                                  configurePhotoViewZoom(it)
-                                  applyComicNavigatorStyle(it)
-                              }
-                          }, 800)
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
                           lifecycleScope.launch {
@@ -1724,7 +1710,13 @@ jobs:
               /**
                * Busca recursivamente cualquier PhotoView dentro de la vista del navigator
                * y configura zoom maximo, zoom doble tap y minimo con valores hardcodeados (v22).
+               * Tambien aplica el modo de visualización (scaleType) según preferencia.
                * PhotoView ya soporta pinch-to-zoom por defecto, pero estos limites amplian el rango util.
+               *
+               * Modos de visualización:
+               *  - WIDTH:  la imagen cabe entera (CENTER_INSIDE) — se ve toda la pagina, con bordes negros si no cuadra
+               *  - HEIGHT: similar a WIDTH en PhotoView (no hay FIT_HEIGHT nativo)
+               *  - FULL:   la imagen llena la pantalla (CENTER_CROP) — recorta bordes
                */
               private fun configurePhotoViewZoom(root: View) {
                   if (root is com.github.chrisbanes.photoview.PhotoView) {
@@ -1732,8 +1724,11 @@ jobs:
                           root.maximumScale = 10f
                           root.mediumScale = 4f
                           root.minimumScale = 0.5f
-                          root.scaleType = when (loadComicViewMode()) {
+                          val mode = loadComicViewMode()
+                          root.scaleType = when (mode) {
                               "FULL" -> android.widget.ImageView.ScaleType.CENTER_CROP
+                              "HEIGHT" -> android.widget.ImageView.ScaleType.CENTER_INSIDE
+                              "WIDTH" -> android.widget.ImageView.ScaleType.CENTER_INSIDE
                               else -> android.widget.ImageView.ScaleType.FIT_CENTER
                           }
                           // PhotoView tiene zoom activo por defecto (no hay setter para desactivarlo).
@@ -1783,17 +1778,10 @@ jobs:
                   if (idx == cur && chapterIndex >= 0) return
                   nav.go(chapters[idx])
                   chapterIndex = idx
-                  // Re-aplicar la configuracion de zoom a la nueva pagina con un retardo.
-                  // Cada pagina de comic tiene su propio PhotoView que nace con los defaults
-                  // (8x maximo); este postDelayed le aplica los limites custom del usuario
-                  // sin pisar el zoom que el usuario ya tenga activo en la pagina anterior.
-                  // En EPUB no hace nada (no es ImageNavigatorFragment).
-                  Handler(Looper.getMainLooper()).postDelayed({
-                      (navigator as? ImageNavigatorFragment)?.view?.let {
-                          configurePhotoViewZoom(it)
-                          applyComicNavigatorStyle(it)
-                      }
-                  }, 300)
+                  // NOTA: NO se reaplica configurePhotoViewZoom al cambiar de pagina,
+                  // porque interfiere con el zoom del usuario y/o resetea el PhotoView
+                  // mientras el usuario interactua. Cada PhotoView nuevo nace con defaults
+                  // de PhotoView (zoom maximo 8x, doble tap 3x) que son suficientes.
               }
           
               private fun flattenToc(
@@ -1956,9 +1944,8 @@ jobs:
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun currentEpubPreferences(): EpubPreferences {
-                  // v23: simplificado. El tema del contenido sigue al tema general de la app
-                  // (no hay ajuste separado de tema EPUB). fontWeight/paragraphIndent/
-                  // publisherStyles/readingProgression/columnCount quedan a null (defaults del libro).
+                  // v25: publisherStyles=false FORZADO para que interlineado, justificación,
+                  // espaciado párrafos y margen lateral tengan efecto sobre el contenido.
                   return EpubPreferences(
                       theme = loadTheme(),
                       fontFamily = loadEpubFont()?.let { FontFamily(it) },
@@ -1967,6 +1954,7 @@ jobs:
                       pageMargins = loadEpubPageMargin(),
                       textAlign = loadEpubTextAlign(),
                       paragraphSpacing = loadEpubParaSpacing(),
+                      publisherStyles = false,
                   )
               }
           
