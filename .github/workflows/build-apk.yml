@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 22
-                  versionName = "2.1"
+                  versionCode = 24
+                  versionName = "2.3"
               }
           
               buildTypes {
@@ -628,6 +628,7 @@ jobs:
               private lateinit var sectionComic: LinearLayout
               private lateinit var brightnessSeekBar: SeekBar
               private lateinit var brightnessValue: TextView
+              private lateinit var fontSizeValue: TextView
               // Lista única con TODOS los chips del panel, para tematizarlos juntos.
               private val allChips = mutableListOf<Button>()
               private val sectionLabels = mutableListOf<TextView>()
@@ -808,10 +809,12 @@ jobs:
                   }
                   libraryRoot.addView(btnPickLibrary)
                   btnOpenExternal = Button(this).apply {
-                      text = "Abrir EPUB externo"
+                      text = "Abrir archivo externo"
                       setOnClickListener {
                           openEpubLauncher.launch(arrayOf(
-                              "application/epub+zip", "application/octet-stream"
+                              "application/epub+zip",
+                              "application/vnd.comicbook+zip", "application/vnd.comicbook-rar",
+                              "application/x-cbz", "application/x-cbr"
                           ))
                       }
                   }
@@ -957,30 +960,37 @@ jobs:
                       Gravity.BOTTOM
                   ))
           
-                  // ===== Panel de Ajustes (overlay sobre toda la app, scrollable) =====
+                  // ===== Panel de Ajustes (overlay lateral derecho, compacto y translucido) =====
                   settingsPanel = ScrollView(this).apply {
                       isFillViewport = true
                       visibility = View.GONE
                       elevation = dp(12).toFloat()
-                      setBackgroundColor(0x99000000.toInt())
+                      // Fondo semi-transparente ligero (40%) para ver la lectura debajo.
+                      setBackgroundColor(0x66000000.toInt())
                   }
                   settingsContent = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(28), dp(36), dp(28), dp(36))
-                      layoutParams = FrameLayout.LayoutParams(
-                          FrameLayout.LayoutParams.MATCH_PARENT,
-                          FrameLayout.LayoutParams.WRAP_CONTENT
-                      )
-                  }
+                      setPadding(dp(16), dp(20), dp(16), dp(20))
+                      // LayoutParams: panel lateral derecho, ~78% del ancho, alineado arriba.
+                        layoutParams = FrameLayout.LayoutParams(
+                            (resources.displayMetrics.widthPixels * 0.78f).toInt(),
+                            FrameLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            gravity = Gravity.TOP or Gravity.END
+                            topMargin = dp(48)
+                            marginEnd = dp(8)
+                            marginStart = dp(8)
+                        }
+                    }
                   settingsPanel.addView(settingsContent)
           
                   fun sectionLabel(txt: String): TextView {
                       val tv = TextView(this).apply {
                           text = txt
-                          textSize = 12f
+                          textSize = 10f
                           letterSpacing = 0.10f
                           setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                          setPadding(dp(4), dp(22), 0, dp(10))
+                          setPadding(dp(2), dp(10), 0, dp(4))
                       }
                       sectionLabels.add(tv)
                       return tv
@@ -988,9 +998,9 @@ jobs:
                   fun labelSmall(txt: String): TextView {
                       val tv = TextView(this).apply {
                           text = txt
-                          textSize = 13f
+                          textSize = 11f
                           setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                          setPadding(dp(4), dp(12), 0, dp(4))
+                          setPadding(dp(2), dp(6), 0, dp(2))
                           layoutParams = LinearLayout.LayoutParams(
                               LinearLayout.LayoutParams.MATCH_PARENT,
                               LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1005,20 +1015,20 @@ jobs:
                       layoutParams = LinearLayout.LayoutParams(
                           LinearLayout.LayoutParams.MATCH_PARENT,
                           LinearLayout.LayoutParams.WRAP_CONTENT
-                      ).apply { bottomMargin = dp(4) }
+                      ).apply { bottomMargin = dp(2) }
                   }
                   fun chip(label: String, activeWhen: (() -> Boolean)? = null, onClick: (View) -> Unit): Button {
                       val b = Button(this).apply {
                           text = label
                           setAllCaps(false)
-                          textSize = 12f
+                          textSize = 11f
                           setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
-                          setPadding(dp(8), dp(10), dp(8), dp(10))
+                          setPadding(dp(6), dp(6), dp(6), dp(6))
                           setOnClickListener(onClick)
                           layoutParams = LinearLayout.LayoutParams(
                               0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
                           ).apply {
-                              marginEnd = dp(4)
+                              marginEnd = dp(3)
                               marginStart = dp(0)
                           }
                       }
@@ -1124,6 +1134,20 @@ jobs:
                   fontRow.addView(chip("Sans Pro", activeWhen = { prefs().getString("pref_font_family", "") == "Source Sans Pro" }) { applyEpubFont("Source Sans Pro") })
                   sectionEpub.addView(fontRow)
           
+                  sectionEpub.addView(labelSmall("Tamaño"))
+                  val fontSizeRow = chipRow()
+                  fontSizeRow.addView(chip("A-", activeWhen = null) { applyFontSizeDelta(-0.1) })
+                  fontSizeValue = TextView(this).apply {
+                      text = "100%"
+                      textSize = 13f
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      gravity = Gravity.CENTER
+                      layoutParams = LinearLayout.LayoutParams(0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+                  fontSizeRow.addView(fontSizeValue)
+                  fontSizeRow.addView(chip("A+", activeWhen = null) { applyFontSizeDelta(+0.1) })
+                  sectionEpub.addView(fontSizeRow)
+          
                   sectionEpub.addView(labelSmall("Interlineado"))
                   val lineRow = chipRow()
                   lineRow.addView(chip("Compacto", activeWhen = { loadEpubLineHeight() == 1.0 }) { applyEpubLineHeight(1.0) })
@@ -1214,7 +1238,7 @@ jobs:
                   libraryAdapter.isDark = dark
           
                   val btnBg = GradientDrawable().apply {
-                      cornerRadius = 12 * density
+                      cornerRadius = 14 * density
                       setColor(if (dark) 0xFF2A2A2A.toInt() else ACCENT)
                       setStroke(dp(1), if (dark) 0xFF444444.toInt() else ACCENT_DARK)
                   }
@@ -1224,8 +1248,9 @@ jobs:
                   btnOpenExternal.setTextColor(if (dark) 0xFFEDEDED.toInt() else Color.WHITE)
           
                   val panelBg = GradientDrawable().apply {
-                      cornerRadius = 24 * density
-                      setColor(if (dark) 0xFF1E1E1E.toInt() else 0xFFFAFAFA.toInt())
+                      cornerRadius = 16 * density
+                      // Panel ligeramente translucido para ver la lectura debajo.
+                      setColor(if (dark) 0xEE1E1E1E.toInt() else 0xEEFAFAFA.toInt())
                       setStroke(dp(1), if (dark) 0xFF333333.toInt() else 0xFFE0E0E0.toInt())
                   }
                   settingsContent.background = panelBg
@@ -1237,7 +1262,7 @@ jobs:
                   }
                   fun paintChipActive(b: Button, isActive: Boolean) {
                       val chipBg = GradientDrawable().apply {
-                          cornerRadius = 20 * density
+                          cornerRadius = 14 * density
                           if (isActive) {
                               setColor(ACCENT)
                               setStroke(dp(1), ACCENT_DARK)
@@ -1361,8 +1386,7 @@ jobs:
                       LibraryMediaType.EPUB -> setOf("application/epub+zip")
                       LibraryMediaType.COMIC -> setOf(
                           "application/vnd.comicbook+zip", "application/vnd.comicbook-rar",
-                          "application/x-cbz", "application/x-cbr",
-                          "application/octet-stream"
+                          "application/x-cbz", "application/x-cbr"
                       )
                   }
                   val entries = withContext(Dispatchers.IO) {
@@ -1842,6 +1866,11 @@ jobs:
                       updateSettingsSections()
                       brightnessSeekBar.progress = (loadActiveBrightness() * 100).toInt().coerceIn(0, 100)
                       brightnessValue.text = "${brightnessSeekBar.progress}%"
+                      // Actualizar el valor mostrado del tamaño de fuente.
+                      val fs = loadFontSize() ?: 1.0
+                      fontSizeValue.text = "${(fs * 100).toInt()}%"
+                      // Repintar chips para que el activo se resalte.
+                      refreshChips()
                   } else {
                       if (readerRoot.visibility == View.VISIBLE) {
                           topBar.visibility = View.GONE
@@ -1927,12 +1956,13 @@ jobs:
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun currentEpubPreferences(): EpubPreferences {
-                  // v22: simplificado. El tema del contenido sigue al tema general de la app
-                  // (no hay ajuste separado de tema EPUB). fontSize/fontWeight/paragraphIndent/
+                  // v23: simplificado. El tema del contenido sigue al tema general de la app
+                  // (no hay ajuste separado de tema EPUB). fontWeight/paragraphIndent/
                   // publisherStyles/readingProgression/columnCount quedan a null (defaults del libro).
                   return EpubPreferences(
                       theme = loadTheme(),
                       fontFamily = loadEpubFont()?.let { FontFamily(it) },
+                      fontSize = loadFontSize(),
                       lineHeight = loadEpubLineHeight(),
                       pageMargins = loadEpubPageMargin(),
                       textAlign = loadEpubTextAlign(),
@@ -1954,6 +1984,15 @@ jobs:
                   prefs().edit().putString("pref_font_family", family).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
                   refreshChips()
+              }
+          
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun applyFontSizeDelta(delta: Double) {
+                  val cur = loadFontSize() ?: 1.0
+                  val new = (cur + delta).coerceIn(0.5, 3.0)
+                  prefs().edit().putFloat("pref_font_size", new.toFloat()).apply()
+                  fontSizeValue.text = "${(new * 100).toInt()}%"
+                  (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
               }
           
               @OptIn(ExperimentalReadiumApi::class)
@@ -2107,6 +2146,11 @@ jobs:
           
               private fun loadEpubFont(): String? =
                   prefs().getString("pref_font_family", null)?.takeIf { it.isNotEmpty() }
+          
+              private fun loadFontSize(): Double? =
+                  if (prefs().contains("pref_font_size"))
+                      prefs().getFloat("pref_font_size", 1f).toDouble()
+                  else null
           
               private fun loadEpubLineHeight(): Double? {
                   val v = prefs().getFloat("pref_epub_line_height", -1f)
