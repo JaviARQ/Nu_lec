@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 29
-                  versionName = "3.2"
+                  versionCode = 30
+                  versionName = "3.3"
               }
           
               buildTypes {
@@ -1729,28 +1729,25 @@ jobs:
                           topBarTitle.text = title
                           // v28: ocultar botón de citas en lector Comic.
                           updateReaderControls()
-                          // v28: reemplazamos OnGlobalLayoutListener (que NO encontraba
-                          // PhotoViews nuevos bajo demanda) por polling cada 250ms durante
-                          // 3 segundos. Así, cuando una nueva página de comic se cargue
-                          // (incluso al hacer swipe), se configurarán sus límites de zoom y
-                          // su estilo. PhotoView crea los fragments bajo demanda.
-                          // IMPORTANTE: configurePhotoViewLimits NO resetea el zoom del
-                          // usuario; solo configura maxScale/medScale/minScale y scaleType
-                          // si no están ya puestos.
+                          // v30: polling permanente cada 800ms para configurar PhotoViews nuevos.
+                          // El ViewPager de Readium crea los R2CbzPageFragment (con su PhotoView)
+                          // bajo demanda al hacer swipe. Necesitamos configurarlos continuamente
+                          // porque cualquier página nueva nace con los defaults de PhotoView (8x).
+                          // configurePhotoViewLimits NO resetea el zoom del usuario; solo configura
+                          // maxScale/medScale/minScale y scaleType si no están ya puestos.
                           val rootView = frag.view ?: navContainer
                           val handler = Handler(Looper.getMainLooper())
-                          var pollCount = 0
                           val pollRunnable = object : Runnable {
                               override fun run() {
                                   configurePhotoViewLimits(rootView)
                                   applyComicNavigatorStyle(rootView)
-                                  pollCount++
-                                  if (pollCount < 12) {  // 12 * 250ms = 3 segundos
-                                      handler.postDelayed(this, 250)
+                                  // Polling permanente mientras el lector esté visible.
+                                  if (readerRoot.visibility == View.VISIBLE) {
+                                      handler.postDelayed(this, 800)
                                   }
                               }
                           }
-                          handler.postDelayed(pollRunnable, 250)
+                          handler.postDelayed(pollRunnable, 200)
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
                           lifecycleScope.launch {
@@ -1794,6 +1791,14 @@ jobs:
                           topBarTitle.text = title
                           // v28: el botón de citas solo es visible en EPUB.
                           updateReaderControls()
+                          // v30: fallback para crear citas con pulsación larga en el contenido.
+                          // Si el ActionMode nativo de selección no aparece (algunos WebView no lo
+                          // activan por defecto), el usuario puede mantener pulsado para abrir
+                          // un diálogo que crea la cita desde la selección actual.
+                          frag.view?.setOnLongClickListener {
+                              showCreateHighlightFallback()
+                              true
+                          }
                           // v28: aplicar decorations de highlights existentes con un pequeño
                           // retardo para que el navigator esté listo.
                           lifecycleScope.launch {
@@ -1821,33 +1826,18 @@ jobs:
           
               /**
                * Busca recursivamente cualquier PhotoView dentro de la vista del navigator
-               * y configura los LIMITES de zoom (maximo, medio, minimo) y el scaleType.
+               * y configura los LIMITES de zoom (maximo, medio, minimo).
                * NO resetea el zoom actual del usuario — respeta el zoom que tenga activo.
                * Solo configura los limites si no estan ya configurados (para no interferir).
-               *
-               * Modos de visualización:
-               *  - WIDTH:  FIT_CENTER — la imagen cabe entera, se ve toda, permite zoom
-               *  - HEIGHT: CENTER_CROP — la imagen llena el alto, recorta los lados
-               *  - FULL:   CENTER_CROP — la imagen llena toda la pantalla, recorta lados
+               * El scaleType se aplica aparte en applyPhotoViewScaleType().
                */
               private fun configurePhotoViewLimits(root: View) {
                   if (root is com.github.chrisbanes.photoview.PhotoView) {
                       runCatching {
-                          // Solo configurar si los limites no estan ya puestos.
                           if (root.maximumScale != 10f) {
                               root.maximumScale = 10f
                               root.mediumScale = 4f
                               root.minimumScale = 0.5f
-                          }
-                          val mode = loadComicViewMode()
-                          val desiredScaleType = when (mode) {
-                              "FULL" -> android.widget.ImageView.ScaleType.CENTER_CROP
-                              "HEIGHT" -> android.widget.ImageView.ScaleType.CENTER_CROP
-                              "WIDTH" -> android.widget.ImageView.ScaleType.FIT_CENTER
-                              else -> android.widget.ImageView.ScaleType.FIT_CENTER
-                          }
-                          if (root.scaleType != desiredScaleType) {
-                              root.scaleType = desiredScaleType
                           }
                       }
                       return
@@ -1859,8 +1849,36 @@ jobs:
                   }
               }
           
+              /**
+               * Aplica el scaleType segun el modo de visualizacion al pulsar el chip.
+               * Esta funcion SI resetea el display matrix (es una accion explicita del usuario).
+               */
+              private fun applyPhotoViewScaleType(root: View) {
+                  if (root is com.github.chrisbanes.photoview.PhotoView) {
+                      runCatching {
+                          val mode = loadComicViewMode()
+                          root.scaleType = when (mode) {
+                              "FULL" -> android.widget.ImageView.ScaleType.CENTER_CROP
+                              "HEIGHT" -> android.widget.ImageView.ScaleType.CENTER_CROP
+                              "WIDTH" -> android.widget.ImageView.ScaleType.FIT_CENTER
+                              else -> android.widget.ImageView.ScaleType.FIT_CENTER
+                          }
+                          runCatching { root.setScale(root.minimumScale, false) }
+                      }
+                      return
+                  }
+                  if (root is ViewGroup) {
+                      for (i in 0 until root.childCount) {
+                          applyPhotoViewScaleType(root.getChildAt(i))
+                      }
+                  }
+              }
+          
               /** Alias para compatibilidad (applyComicViewMode lo usa). */
-              private fun configurePhotoViewZoom(root: View) = configurePhotoViewLimits(root)
+              private fun configurePhotoViewZoom(root: View) {
+                  configurePhotoViewLimits(root)
+                  applyPhotoViewScaleType(root)
+              }
           
               private fun updateProgress(locator: Locator) {
                   val idx = chapters.indexOfFirst { it.url() == locator.href }
@@ -2249,6 +2267,84 @@ jobs:
                   applyAllDecorations()
                   nav.clearSelection()
                   Toast.makeText(this, "Cita creada", Toast.LENGTH_SHORT).show()
+              }
+          
+              /**
+               * v30: Fallback para crear cita cuando la seleccion nativa no funciona.
+               * Muestra un dialogo con un campo de texto para que el usuario pegue el texto
+               * a citar. Asocia la cita con la posicion actual de lectura (lastLocator).
+               * Si hay seleccion nativa disponible, la usa automaticamente.
+               */
+              private fun showCreateHighlightFallback() {
+                  val nav = navigator as? EpubNavigatorFragment
+                  // Primero intentar obtener la seleccion nativa (puede funcionar aunque
+                  // el ActionMode nativo no se muestre).
+                  if (nav != null) {
+                      lifecycleScope.launch {
+                          val selection = nav.currentSelection()
+                          if (selection != null && !selection.locator.text?.highlight.isNullOrBlank()) {
+                              createHighlightFromSelection()
+                              return@launch
+                          }
+                          // Si no hay seleccion nativa, mostrar dialogo manual.
+                          showManualHighlightDialog()
+                      }
+                  } else {
+                      showManualHighlightDialog()
+                  }
+              }
+          
+              /**
+               * Dialogo manual para crear cita: campo de texto para el contenido
+               * y nota opcional. Asocia con la posicion actual.
+               */
+              private fun showManualHighlightDialog() {
+                  val ctx = this
+                  val container = LinearLayout(ctx).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(20), dp(16), dp(20), dp(8))
+                  }
+                  val textInput = android.widget.EditText(ctx).apply {
+                      hint = "Pega aqui el texto a citar"
+                      minLines = 3
+                      maxLines = 5
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                  }
+                  val noteInput = android.widget.EditText(ctx).apply {
+                      hint = "Nota (opcional)"
+                      minLines = 1
+                      maxLines = 2
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                  }
+                  container.addView(textInput)
+                  container.addView(noteInput)
+                  AlertDialog.Builder(ctx)
+                      .setTitle("Crear cita")
+                      .setView(container)
+                      .setPositiveButton("Crear") { _, _ ->
+                          val text = textInput.text.toString().trim()
+                          val note = noteInput.text.toString().trim()
+                          if (text.isBlank()) {
+                              Toast.makeText(ctx, "El texto no puede estar vacio", Toast.LENGTH_SHORT).show()
+                              return@setPositiveButton
+                          }
+                          val locator = lastLocator
+                          val hl = Highlight(
+                              id = "hl_${System.currentTimeMillis()}",
+                              text = text,
+                              locator = locator,
+                              color = "yellow",
+                              note = note,
+                              createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                          )
+                          currentHighlights.add(hl)
+                          val book = currentBookName ?: return@setPositiveButton
+                          appScope.launch { saveHighlights(book, currentHighlights.toList()) }
+                          lifecycleScope.launch { applyAllDecorations() }
+                          Toast.makeText(ctx, "Cita creada", Toast.LENGTH_SHORT).show()
+                      }
+                      .setNegativeButton("Cancelar", null)
+                      .show()
               }
           
               /**
