@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 25
-                  versionName = "2.4"
+                  versionCode = 26
+                  versionName = "3.0"
               }
           
               buildTypes {
@@ -569,7 +569,7 @@ jobs:
               private val ACCENT_DARK = 0xFF3B82F6.toInt()
           
               private val isDark: Boolean
-                  get() = when (prefs().getString("pref_theme", "AUTO")) {
+                  get() = when (prefs().getString("pref_theme", "LIGHT")) {
                       "DARK" -> true
                       "LIGHT" -> false
                       else -> (resources.configuration.uiMode and
@@ -1056,10 +1056,8 @@ jobs:
           
                   sectionGeneral.addView(labelSmall("Tema de la app"))
                   val appThemeRow = chipRow()
-                  appThemeRow.addView(chip("Auto", activeWhen = { prefs().getString("pref_theme", "AUTO") == "AUTO" }) { applyTheme(null) })
-                  appThemeRow.addView(chip("Claro", activeWhen = { prefs().getString("pref_theme", "AUTO") == "LIGHT" }) { applyTheme(Theme.LIGHT) })
-                  appThemeRow.addView(chip("Sepia", activeWhen = { prefs().getString("pref_theme", "AUTO") == "SEPIA" }) { applyTheme(Theme.SEPIA) })
-                  appThemeRow.addView(chip("Oscuro", activeWhen = { prefs().getString("pref_theme", "AUTO") == "DARK" }) { applyTheme(Theme.DARK) })
+                  appThemeRow.addView(chip("Claro", activeWhen = { prefs().getString("pref_theme", "LIGHT") == "LIGHT" }) { applyTheme(Theme.LIGHT) })
+                  appThemeRow.addView(chip("Oscuro", activeWhen = { prefs().getString("pref_theme", "LIGHT") == "DARK" }) { applyTheme(Theme.DARK) })
                   sectionGeneral.addView(appThemeRow)
           
                   sectionGeneral.addView(labelSmall("Brillo"))
@@ -1124,12 +1122,21 @@ jobs:
                   }
                   sectionEpub.addView(sectionLabel("LECTURA EPUB"))
           
+                  sectionEpub.addView(labelSmall("Color de fondo"))
+                  val epubBgRow = chipRow()
+                  epubBgRow.addView(chip("Claro", activeWhen = { prefs().getString("pref_epub_content_theme", "LIGHT") == "LIGHT" }) { applyEpubContentTheme("LIGHT") })
+                  epubBgRow.addView(chip("Sepia", activeWhen = { prefs().getString("pref_epub_content_theme", "LIGHT") == "SEPIA" }) { applyEpubContentTheme("SEPIA") })
+                  epubBgRow.addView(chip("Oscuro", activeWhen = { prefs().getString("pref_epub_content_theme", "LIGHT") == "DARK" }) { applyEpubContentTheme("DARK") })
+                  sectionEpub.addView(epubBgRow)
+          
                   sectionEpub.addView(labelSmall("Fuente"))
                   val fontRow = chipRow()
+                  // v26: solo fuentes reconocidas por Readium por defecto:
+                  // Original (la del libro), Serif, Sans, Monospace.
                   fontRow.addView(chip("Original", activeWhen = { prefs().getString("pref_font_family", "").isNullOrEmpty() }) { applyEpubFont("") })
-                  fontRow.addView(chip("Serif", activeWhen = { prefs().getString("pref_font_family", "") == "PT Serif" }) { applyEpubFont("PT Serif") })
-                  fontRow.addView(chip("Sans", activeWhen = { prefs().getString("pref_font_family", "") == "Roboto" }) { applyEpubFont("Roboto") })
-                  fontRow.addView(chip("Sans Pro", activeWhen = { prefs().getString("pref_font_family", "") == "Source Sans Pro" }) { applyEpubFont("Source Sans Pro") })
+                  fontRow.addView(chip("Serif", activeWhen = { prefs().getString("pref_font_family", "") == "serif" }) { applyEpubFont("serif") })
+                  fontRow.addView(chip("Sans", activeWhen = { prefs().getString("pref_font_family", "") == "sans-serif" }) { applyEpubFont("sans-serif") })
+                  fontRow.addView(chip("Mono", activeWhen = { prefs().getString("pref_font_family", "") == "monospace" }) { applyEpubFont("monospace") })
                   sectionEpub.addView(fontRow)
           
                   sectionEpub.addView(labelSmall("Tamaño"))
@@ -1314,7 +1321,11 @@ jobs:
                   val readerVisible = readerRoot.visibility == View.VISIBLE
                   val isEpub = navigator is EpubNavigatorFragment
                   val isComic = navigator is ImageNavigatorFragment
-                  sectionGeneral.visibility = View.VISIBLE
+                  // v26: separación estricta.
+                  //  - En biblioteca (reader oculto): solo GENERALES
+                  //  - En lector EPUB: solo LECTURA EPUB
+                  //  - En lector COMIC: solo LECTURA COMIC
+                  sectionGeneral.visibility = if (!readerVisible) View.VISIBLE else View.GONE
                   sectionEpub.visibility = if (readerVisible && isEpub) View.VISIBLE else View.GONE
                   sectionComic.visibility = if (readerVisible && isComic) View.VISIBLE else View.GONE
               }
@@ -1510,17 +1521,25 @@ jobs:
           
               private suspend fun readMetadata(uri: Uri, fallbackName: String): Pair<String, Bitmap?> = withContext(Dispatchers.IO) {
                   try {
-                      // Usar extension correcta para que AssetRetriever detecte el formato.
                       val ext = fallbackName.substringAfterLast('.', "epub").lowercase()
-                      val cached = File.createTempFile("meta_", ".$ext", cacheDir)
-                      contentResolver.openInputStream(uri)?.use { input ->
-                          cached.outputStream().use { input.copyTo(it) }
-                      } ?: return@withContext fallbackName to null
+                      // v26: para CBR, Readium no puede abrirlo nativamente. Convertimos a CBZ en cache
+                      // primero (igual que al abrir para leer), y luego abrimos el CBZ.
+                      val cached: File = if (ext == "cbr") {
+                          runCatching { ComicConverter.convertCbrToCbz(this@MainActivity, uri, fallbackName) }
+                              .getOrNull()
+                              ?: return@withContext fallbackName.substringBeforeLast('.') to null
+                      } else {
+                          val c = File.createTempFile("meta_", ".$ext", cacheDir)
+                          contentResolver.openInputStream(uri)?.use { input ->
+                              c.outputStream().use { input.copyTo(it) }
+                          } ?: return@withContext fallbackName to null
+                          c
+                      }
                       val assetResult = app.assetRetriever.retrieve(cached)
                       val asset = assetResult.getOrNull()
-                          ?: return@withContext fallbackName to null
+                          ?: return@withContext fallbackName.substringBeforeLast('.') to null
                       val pubResult = app.publicationOpener.open(asset, allowUserInteraction = false)
-                      val pub = pubResult.getOrNull() ?: return@withContext fallbackName to null
+                      val pub = pubResult.getOrNull() ?: return@withContext fallbackName.substringBeforeLast('.') to null
                       // v22: para comics (cbz/cbr) el título suele ser null o igual al nombre del archivo.
                       // En ese caso, devolvemos el nombre SIN extensión para no mostrar ".cbz"/".cbr".
                       val rawTitle = pub.metadata.title
@@ -1540,10 +1559,10 @@ jobs:
                           cover = extractFirstImageAsBitmap(pub)
                       }
                       pub.close()
-                      cached.delete()
+                      if (ext != "cbr") cached.delete()  // El CBZ de CBR queda en cache para reutilizar al abrir
                       title to cover
                   } catch (_: Throwable) {
-                      fallbackName to null
+                      fallbackName.substringBeforeLast('.') to null
                   }
               }
           
@@ -1714,9 +1733,9 @@ jobs:
                * PhotoView ya soporta pinch-to-zoom por defecto, pero estos limites amplian el rango util.
                *
                * Modos de visualización:
-               *  - WIDTH:  la imagen cabe entera (CENTER_INSIDE) — se ve toda la pagina, con bordes negros si no cuadra
-               *  - HEIGHT: similar a WIDTH en PhotoView (no hay FIT_HEIGHT nativo)
-               *  - FULL:   la imagen llena la pantalla (CENTER_CROP) — recorta bordes
+               *  - WIDTH:  FIT_CENTER — la imagen cabe entera, se ve toda, permite zoom
+               *  - HEIGHT: CENTER_CROP — la imagen llena el alto, recorta los lados
+               *  - FULL:   CENTER_CROP — la imagen llena toda la pantalla, recorta lados
                */
               private fun configurePhotoViewZoom(root: View) {
                   if (root is com.github.chrisbanes.photoview.PhotoView) {
@@ -1727,11 +1746,13 @@ jobs:
                           val mode = loadComicViewMode()
                           root.scaleType = when (mode) {
                               "FULL" -> android.widget.ImageView.ScaleType.CENTER_CROP
-                              "HEIGHT" -> android.widget.ImageView.ScaleType.CENTER_INSIDE
-                              "WIDTH" -> android.widget.ImageView.ScaleType.CENTER_INSIDE
+                              "HEIGHT" -> android.widget.ImageView.ScaleType.CENTER_CROP
+                              "WIDTH" -> android.widget.ImageView.ScaleType.FIT_CENTER
                               else -> android.widget.ImageView.ScaleType.FIT_CENTER
                           }
-                          // PhotoView tiene zoom activo por defecto (no hay setter para desactivarlo).
+                          // Resetear el zoom al minimo para que el scaleType tenga efecto visual.
+                          runCatching { root.scale = root.minimumScale }
+                          runCatching { root.setScale(root.minimumScale, false) }
                       }
                       return
                   }
@@ -1944,10 +1965,11 @@ jobs:
           
               @OptIn(ExperimentalReadiumApi::class)
               private fun currentEpubPreferences(): EpubPreferences {
-                  // v25: publisherStyles=false FORZADO para que interlineado, justificación,
-                  // espaciado párrafos y margen lateral tengan efecto sobre el contenido.
+                  // v26: el tema del contenido EPUB es independiente del tema de la app.
+                  // publisherStyles=false FORZADO para que interlineado, justificación,
+                  // espaciado párrafos, fuente y margen lateral tengan efecto.
                   return EpubPreferences(
-                      theme = loadTheme(),
+                      theme = loadEpubContentTheme(),
                       fontFamily = loadEpubFont()?.let { FontFamily(it) },
                       fontSize = loadFontSize(),
                       lineHeight = loadEpubLineHeight(),
@@ -1970,6 +1992,13 @@ jobs:
               @OptIn(ExperimentalReadiumApi::class)
               private fun applyEpubFont(family: String) {
                   prefs().edit().putString("pref_font_family", family).apply()
+                  (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
+                  refreshChips()
+              }
+          
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun applyEpubContentTheme(theme: String) {
+                  prefs().edit().putString("pref_epub_content_theme", theme).apply()
                   (navigator as? EpubNavigatorFragment)?.submitPreferences(currentEpubPreferences())
                   refreshChips()
               }
@@ -2121,15 +2150,24 @@ jobs:
               // ===== Loaders EPUB =====
           
               /**
-               * Tema general de la app (UI). En v22 también se aplica al contenido EPUB
-               * a través de currentEpubPreferences().
+               * Tema general de la app (UI): solo LIGHT/DARK.
                */
               @OptIn(ExperimentalReadiumApi::class)
-              private fun loadTheme(): Theme? = when (prefs().getString("pref_theme", "AUTO")) {
+              private fun loadTheme(): Theme? = when (prefs().getString("pref_theme", "LIGHT")) {
                   "LIGHT" -> Theme.LIGHT
-                  "SEPIA" -> Theme.SEPIA
                   "DARK" -> Theme.DARK
                   else -> null
+              }
+          
+              /**
+               * Tema del contenido EPUB (puede ser distinto del tema de la app).
+               * Valores: LIGHT / SEPIA / DARK. Default = LIGHT.
+               */
+              @OptIn(ExperimentalReadiumApi::class)
+              private fun loadEpubContentTheme(): Theme = when (prefs().getString("pref_epub_content_theme", "LIGHT")) {
+                  "SEPIA" -> Theme.SEPIA
+                  "DARK" -> Theme.DARK
+                  else -> Theme.LIGHT
               }
           
               private fun loadEpubFont(): String? =
