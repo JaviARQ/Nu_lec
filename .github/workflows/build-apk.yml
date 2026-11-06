@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 34
-                  versionName = "3.6"
+                  versionCode = 35
+                  versionName = "3.7"
               }
           
               buildTypes {
@@ -611,6 +611,11 @@ jobs:
               private lateinit var btnBackFolder: ImageButton
               private lateinit var btnRefreshLibrary: ImageButton
               private lateinit var btnAllQuotes: ImageButton
+              // ----- Vistas: QUOTES (pantalla completa de citas) -----
+              private lateinit var quotesRoot: FrameLayout
+              private lateinit var quotesTopBar: LinearLayout
+              private lateinit var quotesScrollView: ScrollView
+              private lateinit var quotesContainer: LinearLayout
               private lateinit var btnOpenSettings: ImageButton
               // Selector dual: Libros / Comics
               private lateinit var btnMediaEpub: ImageButton
@@ -1312,6 +1317,51 @@ jobs:
                   ))
           
                   root.addView(readerRoot, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.MATCH_PARENT
+                  ))
+          
+                  // ===== Pantalla de Citas (pantalla completa) =====
+                  quotesRoot = FrameLayout(this).apply { visibility = View.GONE }
+                  quotesContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(8), dp(16), dp(16))
+                  }
+                  quotesScrollView = ScrollView(this).apply { addView(quotesContainer) }
+                  // Top bar de citas: [Atrás] "Citas"
+                  quotesTopBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setBackgroundColor(0xE6161616.toInt())
+                      setPadding(dp(8), dp(28), dp(8), dp(10))
+                  }
+                  quotesTopBar.addView(ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_back)
+                      background = null
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      setOnClickListener { closeQuotesScreen() }
+                  })
+                  val quotesTitle = TextView(this).apply {
+                      text = "Citas"
+                      textSize = 18f
+                      setTextColor(Color.WHITE)
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      layoutParams = LinearLayout.LayoutParams(
+                          0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
+                      ).apply { marginStart = dp(8) }
+                  }
+                  quotesTopBar.addView(quotesTitle)
+                  quotesRoot.addView(quotesTopBar, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.WRAP_CONTENT,
+                      Gravity.TOP
+                  ))
+                  quotesRoot.addView(quotesScrollView, FrameLayout.LayoutParams(
+                      FrameLayout.LayoutParams.MATCH_PARENT,
+                      FrameLayout.LayoutParams.MATCH_PARENT
+                  ).apply { topMargin = dp(60) })
+          
+                  root.addView(quotesRoot, FrameLayout.LayoutParams(
                       FrameLayout.LayoutParams.MATCH_PARENT,
                       FrameLayout.LayoutParams.MATCH_PARENT
                   ))
@@ -2559,6 +2609,10 @@ jobs:
                       toggleSettingsPanel()
                       return
                   }
+                  if (quotesRoot.visibility == View.VISIBLE) {
+                      closeQuotesScreen()
+                      return
+                  }
                   if (readerRoot.visibility == View.VISIBLE) {
                       closeBook()
                   } else if (currentFolderUri != null) {
@@ -3029,51 +3083,55 @@ jobs:
                * agrupadas por libro. Cada item muestra: texto, nota (si existe), fecha.
                * v28: pulsar una cita navega a ella si el libro correspondiente está abierto.
                */
+              /**
+               * v35: Pantalla completa de citas (no diálogo).
+               * Muestra TODAS las citas de la biblioteca, agrupadas por libro.
+               * Al pulsar una cita, abre el libro y navega a ella.
+               */
               private suspend fun showAllHighlights() {
                   val ctx = this@MainActivity
                   val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
                   val all = loadAllHighlights()
-                  var dialog: AlertDialog? = null
-          
-                  val container = LinearLayout(ctx).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(dp(16), dp(8), dp(16), dp(8))
-                  }
+                  // Limpiar contenedor
+                  quotesContainer.removeAllViews()
+                  // Fondo según tema
+                  quotesRoot.setBackgroundColor(if (isDark) 0xFF121212.toInt() else 0xFFFAFAFA.toInt())
                   if (all.isEmpty()) {
                       val tv = TextView(ctx).apply {
                           text = "No hay citas en la biblioteca."
-                          textSize = 13f
-                          setPadding(dp(8), dp(12), dp(8), dp(12))
+                          textSize = 14f
+                          setPadding(dp(16), dp(24), dp(16), dp(24))
                           setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                          gravity = Gravity.CENTER
                       }
-                      container.addView(tv)
+                      quotesContainer.addView(tv)
                   } else {
                       val grouped = all.groupBy { it.first }
                       for ((book, items) in grouped) {
                           val headerTv = TextView(ctx).apply {
                               text = "📖 ${book.substringBeforeLast('.')}"
-                              textSize = 12f
+                              textSize = 13f
                               setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
                               setTextColor(ACCENT)
-                              setPadding(dp(8), dp(10), dp(8), dp(4))
+                              setPadding(dp(8), dp(14), dp(8), dp(4))
                           }
-                          container.addView(headerTv)
+                          quotesContainer.addView(headerTv)
                           for ((_, h) in items) {
                               val row = LinearLayout(ctx).apply {
                                   orientation = LinearLayout.VERTICAL
-                                  setPadding(dp(12), dp(10), dp(12), dp(10))
+                                  setPadding(dp(14), dp(12), dp(14), dp(12))
                                   background = GradientDrawable().apply {
-                                      cornerRadius = 10 * density
+                                      cornerRadius = 12 * density
                                       setColor(if (isDark) 0xFF2A2A2A.toInt() else 0xFFEEEEEE.toInt())
                                   }
                                   val lp = LinearLayout.LayoutParams(
                                       LinearLayout.LayoutParams.MATCH_PARENT,
                                       LinearLayout.LayoutParams.WRAP_CONTENT
-                                  ).apply { bottomMargin = dp(6) }
+                                  ).apply { bottomMargin = dp(8) }
                                   layoutParams = lp
-                                  // v32: pulsar la cita ABRE el libro y navega a la cita.
+                                  // v35: pulsar la cita ABRE el libro y navega.
                                   setOnClickListener {
-                                      dialog?.dismiss()
+                                      closeQuotesScreen()
                                       lifecycleScope.launch {
                                           openBookAndGoToHighlight(book, h)
                                       }
@@ -3081,18 +3139,16 @@ jobs:
                               }
                               val textTv = TextView(ctx).apply {
                                   text = "\"${h.text}\""
-                                  // v32: mostrar cita COMPLETA (no truncar a 2 líneas).
-                                  textSize = 13f
-                                  setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                                  textSize = 14f
                                   setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
                               }
                               row.addView(textTv)
                               if (h.note.isNotEmpty()) {
                                   val noteTv = TextView(ctx).apply {
                                       text = "Nota: ${h.note}"
-                                      textSize = 11f
+                                      textSize = 12f
                                       setTextColor(if (isDark) 0xFFB0B0B0.toInt() else 0xFF666666.toInt())
-                                      setPadding(0, dp(4), 0, 0)
+                                      setPadding(0, dp(6), 0, 0)
                                   }
                                   row.addView(noteTv)
                               }
@@ -3100,21 +3156,23 @@ jobs:
                                   text = h.createdAt
                                   textSize = 10f
                                   setTextColor(0xFF888888.toInt())
-                                  setPadding(0, dp(4), 0, 0)
+                                  setPadding(0, dp(6), 0, 0)
                               }
                               row.addView(dateTv)
-                              container.addView(row)
+                              quotesContainer.addView(row)
                           }
                       }
                   }
+                  // Mostrar pantalla de citas sobre la biblioteca.
+                  libraryRoot.visibility = View.GONE
+                  readerRoot.visibility = View.GONE
+                  quotesRoot.visibility = View.VISIBLE
+              }
           
-                  val scrollView = ScrollView(ctx).apply { addView(container) }
-                  dialog = AlertDialog.Builder(ctx)
-                      .setTitle("Todas las citas (${all.size})")
-                      .setView(scrollView)
-                      .setNegativeButton("Cerrar", null)
-                      .create()
-                  dialog?.show()
+              /** Cierra la pantalla de citas y vuelve a la biblioteca. */
+              private fun closeQuotesScreen() {
+                  quotesRoot.visibility = View.GONE
+                  libraryRoot.visibility = View.VISIBLE
               }
           
               /**
