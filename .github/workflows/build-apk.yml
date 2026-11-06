@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 31
-                  versionName = "3.4"
+                  versionCode = 33
+                  versionName = "3.6"
               }
           
               buildTypes {
@@ -677,6 +677,19 @@ jobs:
               private var chapterIndex: Int = -1
               /** Highlights del libro actualmente abierto (en memoria, persistidos en sidecar). */
               private var currentHighlights: MutableList<Highlight> = mutableListOf()
+              /** Handler para auto-ocultar los overlays del lector tras unos segundos. */
+              private val overlayHideHandler = Handler(Looper.getMainLooper())
+              private val overlayHideRunnable = Runnable {
+                  if (readerRoot.visibility == View.VISIBLE && !settingsVisible) {
+                      topBar.visibility = View.GONE
+                      bottomBar.visibility = View.GONE
+                  }
+              }
+              /** Programa el auto-ocultar de overlays tras 4 segundos. */
+              private fun scheduleOverlayHide() {
+                  overlayHideHandler.removeCallbacks(overlayHideRunnable)
+                  overlayHideHandler.postDelayed(overlayHideRunnable, 4000)
+              }
           
               private val openEpubLauncher = registerForActivityResult(
                   ActivityResultContracts.OpenDocument()
@@ -1032,6 +1045,31 @@ jobs:
                     }
                   settingsPanel.addView(settingsContent)
           
+                  // v32: cabecera del panel con título "Ajustes" y botón "X" para cerrar.
+                  val settingsHeader = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(2), dp(2), dp(2), dp(6))
+                  }
+                  val settingsTitleTv = TextView(this).apply {
+                      text = "Ajustes"
+                      textSize = 16f
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      setTextColor(if (isDark) 0xFFFFFFFF.toInt() else ACCENT)
+                      layoutParams = LinearLayout.LayoutParams(
+                          0, FrameLayout.LayoutParams.WRAP_CONTENT, 1f
+                      )
+                  }
+                  settingsHeader.addView(settingsTitleTv)
+                  val btnCloseSettings = ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_close)
+                      background = null
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                      setOnClickListener { toggleSettingsPanel() }
+                  }
+                  settingsHeader.addView(btnCloseSettings)
+                  settingsContent.addView(settingsHeader)
+          
                   fun sectionLabel(txt: String): TextView {
                       val tv = TextView(this).apply {
                           text = txt
@@ -1202,30 +1240,34 @@ jobs:
           
                   sectionEpub.addView(labelSmall("Interlineado"))
                   val lineRow = chipRow()
-                  lineRow.addView(chip("Compacto", activeWhen = { loadEpubLineHeight() == 1.0 }) { applyEpubLineHeight(1.0) })
-                  lineRow.addView(chip("Normal", activeWhen = { loadEpubLineHeight() == 1.5 }) { applyEpubLineHeight(1.5) })
-                  lineRow.addView(chip("Suelto", activeWhen = { loadEpubLineHeight() == 2.0 }) { applyEpubLineHeight(2.0) })
-                  sectionEpub.addView(lineRow)
+                  // v32: si no hay preferencia guardada (null), marcar "Normal" como activo.
+                    lineRow.addView(chip("Compacto", activeWhen = { loadEpubLineHeight() == 1.0 }) { applyEpubLineHeight(1.0) })
+                    lineRow.addView(chip("Normal", activeWhen = { val v = loadEpubLineHeight(); v == null || v == 1.5 }) { applyEpubLineHeight(1.5) })
+                    lineRow.addView(chip("Suelto", activeWhen = { loadEpubLineHeight() == 2.0 }) { applyEpubLineHeight(2.0) })
+                    sectionEpub.addView(lineRow)
           
                   sectionEpub.addView(labelSmall("Justificación"))
                   val justifyRow = chipRow()
-                  justifyRow.addView(chip("Justificado", activeWhen = { prefs().getString("pref_epub_align", "") == "JUSTIFY" }) { applyEpubJustify("JUSTIFY") })
-                  justifyRow.addView(chip("Izquierda", activeWhen = { prefs().getString("pref_epub_align", "") == "LEFT" }) { applyEpubJustify("LEFT") })
-                  sectionEpub.addView(justifyRow)
+                  // v32: si no hay preferencia (""), marcar "Justificado" como activo (default Readium).
+                    justifyRow.addView(chip("Justificado", activeWhen = { val v = prefs().getString("pref_epub_align", ""); v.isEmpty() || v == "JUSTIFY" }) { applyEpubJustify("JUSTIFY") })
+                    justifyRow.addView(chip("Izquierda", activeWhen = { prefs().getString("pref_epub_align", "") == "LEFT" }) { applyEpubJustify("LEFT") })
+                    sectionEpub.addView(justifyRow)
           
                   sectionEpub.addView(labelSmall("Margen lateral"))
                   val marginRow = chipRow()
-                  marginRow.addView(chip("Pequeño", activeWhen = { loadEpubPageMargin() == 0.5 }) { applyEpubMargin(0.5) })
-                  marginRow.addView(chip("Medio", activeWhen = { loadEpubPageMargin() == 1.0 }) { applyEpubMargin(1.0) })
-                  marginRow.addView(chip("Grande", activeWhen = { loadEpubPageMargin() == 1.5 }) { applyEpubMargin(1.5) })
-                  sectionEpub.addView(marginRow)
+                  // v32: si no hay preferencia (null), marcar "Medio" como activo (default razonable).
+                    marginRow.addView(chip("Pequeño", activeWhen = { loadEpubPageMargin() == 0.5 }) { applyEpubMargin(0.5) })
+                    marginRow.addView(chip("Medio", activeWhen = { val v = loadEpubPageMargin(); v == null || v == 1.0 }) { applyEpubMargin(1.0) })
+                    marginRow.addView(chip("Grande", activeWhen = { loadEpubPageMargin() == 1.5 }) { applyEpubMargin(1.5) })
+                    sectionEpub.addView(marginRow)
           
                   sectionEpub.addView(labelSmall("Espaciado párrafos"))
                   val paraSpacingRow = chipRow()
-                  paraSpacingRow.addView(chip("Compacto", activeWhen = { loadEpubParaSpacing() == 0.0 }) { applyEpubParaSpacing(0.0) })
-                  paraSpacingRow.addView(chip("Normal", activeWhen = { loadEpubParaSpacing() == 1.0 }) { applyEpubParaSpacing(1.0) })
-                  paraSpacingRow.addView(chip("Amplio", activeWhen = { loadEpubParaSpacing() == 2.0 }) { applyEpubParaSpacing(2.0) })
-                  sectionEpub.addView(paraSpacingRow)
+                  // v32: si no hay preferencia (null), marcar "Normal" como activo.
+                    paraSpacingRow.addView(chip("Compacto", activeWhen = { loadEpubParaSpacing() == 0.0 }) { applyEpubParaSpacing(0.0) })
+                    paraSpacingRow.addView(chip("Normal", activeWhen = { val v = loadEpubParaSpacing(); v == null || v == 1.0 }) { applyEpubParaSpacing(1.0) })
+                    paraSpacingRow.addView(chip("Amplio", activeWhen = { loadEpubParaSpacing() == 2.0 }) { applyEpubParaSpacing(2.0) })
+                    sectionEpub.addView(paraSpacingRow)
                   settingsContent.addView(sectionEpub)
           
                   // ===== SECCIÓN: LECTURA COMIC =====
@@ -1749,6 +1791,14 @@ jobs:
                           handler.postDelayed(pollRunnable, 200)
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
+                          // v32: si venimos de "Todas las citas", navegar al locator pendiente.
+                          pendingHighlightLocator?.let { loc ->
+                              lifecycleScope.launch {
+                                  delay(800)  // Esperar a que el navigator esté listo.
+                                  (navigator as? org.readium.r2.navigator.Navigator)?.go(loc)
+                                  pendingHighlightLocator = null
+                              }
+                          }
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
@@ -1803,6 +1853,12 @@ jobs:
                           lifecycleScope.launch {
                               delay(300)
                               applyAllDecorations()
+                              // v32: si venimos de "Todas las citas", navegar al locator pendiente.
+                              pendingHighlightLocator?.let { loc ->
+                                  delay(500)  // Esperar a que el navigator esté listo.
+                                  (navigator as? EpubNavigatorFragment)?.go(loc)
+                                  pendingHighlightLocator = null
+                              }
                           }
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
@@ -1975,6 +2031,12 @@ jobs:
                   val newVisibility = if (topBar.visibility == View.VISIBLE) View.GONE else View.VISIBLE
                   topBar.visibility = newVisibility
                   bottomBar.visibility = newVisibility
+                  // v33: auto-ocultar tras 4 segundos si se están mostrando.
+                  if (newVisibility == View.VISIBLE) {
+                      scheduleOverlayHide()
+                  } else {
+                      overlayHideHandler.removeCallbacks(overlayHideRunnable)
+                  }
               }
           
               private fun toggleSettingsPanel() {
@@ -2509,12 +2571,19 @@ jobs:
               // v31: en vez de tap centro (que interfiere con zoom y selección de texto),
               // el toggle de overlays se hace con SWIPE DOWN desde el borde superior.
               // El usuario desliza el dedo de arriba hacia abajo para mostrar/ocultar menús.
+              // v33: además, un tap simple en el contenido oculta los overlays si están visibles.
               private var swipeStartY = -1f
               private var swipeStartX = -1f
+              private var tapDownX = -1f
+              private var tapDownY = -1f
+              private var tapDownTime = 0L
           
               override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
                   when (ev.actionMasked) {
                       MotionEvent.ACTION_DOWN -> {
+                          tapDownX = ev.x
+                          tapDownY = ev.y
+                          tapDownTime = System.currentTimeMillis()
                           // Cerrar panel de ajustes al tocar fuera (funciona en library y reader).
                           if (settingsVisible) {
                               val panelLoc = IntArray(2)
@@ -2551,7 +2620,36 @@ jobs:
                               }
                           }
                       }
-                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                      MotionEvent.ACTION_UP -> {
+                          // v33: si fue un tap simple (no swipe desde arriba) y los overlays
+                          // están visibles, y el toque no fue dentro de topBar/bottomBar,
+                          // ocultar los overlays.
+                          val wasSwipeFromTop = swipeStartY >= 0
+                          swipeStartY = -1f
+                          if (readerRoot.visibility == View.VISIBLE && !settingsVisible && !wasSwipeFromTop) {
+                              val elapsed = System.currentTimeMillis() - tapDownTime
+                              val moved = kotlin.math.abs(ev.x - tapDownX) > 20 * density ||
+                                  kotlin.math.abs(ev.y - tapDownY) > 20 * density
+                              if (elapsed < 300 && !moved) {
+                                  // Fue un tap simple. ¿Está dentro de topBar o bottomBar?
+                                  val topLoc = IntArray(2)
+                                  topBar.getLocationOnScreen(topLoc)
+                                  val inTopBar = ev.x >= topLoc[0] && ev.x <= topLoc[0] + topBar.width &&
+                                      ev.y >= topLoc[1] && ev.y <= topLoc[1] + topBar.height
+                                  val botLoc = IntArray(2)
+                                  bottomBar.getLocationOnScreen(botLoc)
+                                  val inBottomBar = ev.x >= botLoc[0] && ev.x <= botLoc[0] + bottomBar.width &&
+                                      ev.y >= botLoc[1] && ev.y <= botLoc[1] + bottomBar.height
+                                  if (!inTopBar && !inBottomBar && topBar.visibility == View.VISIBLE) {
+                                      topBar.visibility = View.GONE
+                                      bottomBar.visibility = View.GONE
+                                      overlayHideHandler.removeCallbacks(overlayHideRunnable)
+                                      return true
+                                  }
+                              }
+                          }
+                      }
+                      MotionEvent.ACTION_CANCEL -> {
                           swipeStartY = -1f
                       }
                   }
@@ -2973,27 +3071,17 @@ jobs:
                                       LinearLayout.LayoutParams.WRAP_CONTENT
                                   ).apply { bottomMargin = dp(6) }
                                   layoutParams = lp
-                                  // v28: pulsar la cita navega si el libro está abierto.
+                                  // v32: pulsar la cita ABRE el libro y navega a la cita.
                                   setOnClickListener {
-                                      val nav = navigator as? EpubNavigatorFragment
-                                      val openedBook = currentBookName
-                                      if (nav == null || openedBook != book) {
-                                          Toast.makeText(ctx, "Abre el libro primero para ir a la cita", Toast.LENGTH_SHORT).show()
-                                          return@setOnClickListener
-                                      }
-                                      val loc = h.locator
-                                      if (loc == null) {
-                                          Toast.makeText(ctx, "Cita sin posición válida", Toast.LENGTH_SHORT).show()
-                                          return@setOnClickListener
-                                      }
                                       dialog?.dismiss()
-                                      lifecycleScope.launch { nav.go(loc) }
+                                      lifecycleScope.launch {
+                                          openBookAndGoToHighlight(book, h)
+                                      }
                                   }
                               }
                               val textTv = TextView(ctx).apply {
                                   text = "\"${h.text}\""
-                                  maxLines = 2
-                                  ellipsize = android.text.TextUtils.TruncateAt.END
+                                  // v32: mostrar cita COMPLETA (no truncar a 2 líneas).
                                   textSize = 13f
                                   setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
                                   setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
@@ -3003,8 +3091,6 @@ jobs:
                                   val noteTv = TextView(ctx).apply {
                                       text = "Nota: ${h.note}"
                                       textSize = 11f
-                                      maxLines = 2
-                                      ellipsize = android.text.TextUtils.TruncateAt.END
                                       setTextColor(if (isDark) 0xFFB0B0B0.toInt() else 0xFF666666.toInt())
                                       setPadding(0, dp(4), 0, 0)
                                   }
@@ -3029,6 +3115,119 @@ jobs:
                       .setNegativeButton("Cerrar", null)
                       .create()
                   dialog?.show()
+              }
+          
+              /**
+               * v32: Abre un libro desde la biblioteca (buscándolo por nombre) y, una vez
+               * cargado, navega al locator del highlight indicado.
+               */
+              private suspend fun openBookAndGoToHighlight(bookName: String, h: Highlight) {
+                  // Buscar el libro en la biblioteca activa (carpeta actual incluida).
+                  val entry = findLibraryEntryByName(bookName)
+                  if (entry == null) {
+                      Toast.makeText(this, "No se encontró '$bookName' en la biblioteca", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+                  // Guardar el locator pendiente para navegar tras abrir.
+                  pendingHighlightLocator = h.locator
+                  // Abrir el libro (sincrono: espera a que el navigator esté listo).
+                  openFromLibrary(entry)
+              }
+          
+              /** Locator pendiente de aplicar tras abrir un libro desde "Todas las citas". */
+              private var pendingHighlightLocator: Locator? = null
+          
+              /**
+               * Busca una entrada en la biblioteca activa por nombre de archivo.
+               * Escanea la carpeta actual (sin recursión profunda) buscando el archivo.
+               */
+              private suspend fun findLibraryEntryByName(bookName: String): LibraryEntry? {
+                  val tree = activeTreeUri() ?: return null
+                  // Buscar en la carpeta raiz.
+                  val found = scanForFile(tree, bookName)
+                  if (found != null) return found
+                  // Buscar recursivamente en subcarpetas (hasta 3 niveles).
+                  return scanForFileRecursive(tree, bookName, maxDepth = 3)
+              }
+          
+              private suspend fun scanForFile(tree: Uri, bookName: String): LibraryEntry? = withContext(Dispatchers.IO) {
+                  try {
+                      val treeDocId = DocumentsContract.getTreeDocumentId(tree)
+                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId)
+                      var result: LibraryEntry? = null
+                      contentResolver.query(children, arrayOf(
+                          Document.COLUMN_DOCUMENT_ID,
+                          Document.COLUMN_DISPLAY_NAME,
+                          Document.COLUMN_MIME_TYPE
+                      ), null, null, null)?.use { c ->
+                          val idIdx = c.getColumnIndexOrThrow(Document.COLUMN_DOCUMENT_ID)
+                          val nameIdx = c.getColumnIndexOrThrow(Document.COLUMN_DISPLAY_NAME)
+                          val mimeIdx = c.getColumnIndexOrThrow(Document.COLUMN_MIME_TYPE)
+                          while (c.moveToNext()) {
+                              val name = c.getString(nameIdx) ?: continue
+                              if (name == bookName) {
+                                  val docId = c.getString(idIdx)
+                                  val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
+                                  val ext = name.substringAfterLast('.', "").lowercase()
+                                  result = LibraryEntry(
+                                      fileName = name,
+                                      title = name.substringBeforeLast('.'),
+                                      cover = null,
+                                      documentUri = docUri,
+                                      extension = ext,
+                                  )
+                                  break
+                              }
+                          }
+                      }
+                      result
+                  } catch (_: Throwable) { null }
+              }
+          
+              private suspend fun scanForFileRecursive(folderUri: Uri, bookName: String, maxDepth: Int): LibraryEntry? = withContext(Dispatchers.IO) {
+                  if (maxDepth <= 0) return@withContext null
+                  try {
+                      val folderDocId = DocumentsContract.getDocumentId(folderUri)
+                      val children = DocumentsContract.buildChildDocumentsUriUsingTree(folderUri, folderDocId)
+                      val subfolders = mutableListOf<Uri>()
+                      var found: LibraryEntry? = null
+                      contentResolver.query(children, arrayOf(
+                          Document.COLUMN_DOCUMENT_ID,
+                          Document.COLUMN_DISPLAY_NAME,
+                          Document.COLUMN_MIME_TYPE
+                      ), null, null, null)?.use { c ->
+                          val idIdx = c.getColumnIndexOrThrow(Document.COLUMN_DOCUMENT_ID)
+                          val nameIdx = c.getColumnIndexOrThrow(Document.COLUMN_DISPLAY_NAME)
+                          val mimeIdx = c.getColumnIndexOrThrow(Document.COLUMN_MIME_TYPE)
+                          while (c.moveToNext()) {
+                              val name = c.getString(nameIdx) ?: continue
+                              val mime = c.getString(mimeIdx) ?: ""
+                              val docId = c.getString(idIdx)
+                              val docUri = DocumentsContract.buildDocumentUriUsingTree(folderUri, docId)
+                              val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                              if (isDir) {
+                                  subfolders.add(docUri)
+                              } else if (name == bookName) {
+                                  val ext = name.substringAfterLast('.', "").lowercase()
+                                  found = LibraryEntry(
+                                      fileName = name,
+                                      title = name.substringBeforeLast('.'),
+                                      cover = null,
+                                      documentUri = docUri,
+                                      extension = ext,
+                                  )
+                                  return@use
+                              }
+                          }
+                      }
+                      if (found != null) return@withContext found
+                      // Recursión en subcarpetas.
+                      for (sub in subfolders) {
+                          val r = scanForFileRecursive(sub, bookName, maxDepth - 1)
+                          if (r != null) return@withContext r
+                      }
+                      null
+                  } catch (_: Throwable) { null }
               }
           }
           EOF
@@ -3102,6 +3301,15 @@ jobs:
               android:viewportWidth="24" android:viewportHeight="24">
               <path android:fillColor="#FF424242"
                   android:pathData="M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29 -0.59,-0.22l-2.39,0.96c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41 -0.48,-0.41h-3.84c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48l2.03,1.58C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14 -0.23,0.41 -0.12,0.61l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7 1.62,0.94l0.36,2.54c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17 0.47,-0.41l0.36,-2.54c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0 0.59,-0.22l1.92,-3.32c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94zM12,15.6c-1.98,0 -3.6,-1.62 -3.6,-3.6s1.62,-3.6 3.6,-3.6s3.6,1.62 3.6,3.6S13.98,15.6 12,15.6z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_close.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FF424242"
+                  android:pathData="M19,6.41L17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12z"/>
           </vector>
           EOF
 
