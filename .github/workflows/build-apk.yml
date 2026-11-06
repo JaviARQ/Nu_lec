@@ -98,7 +98,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 37
+                  versionCode = 38
                   versionName = "4.0"
               }
           
@@ -558,7 +558,6 @@ jobs:
           import org.json.JSONArray
           import org.json.JSONObject
           import org.readium.r2.navigator.epub.EpubNavigatorFactory
-          import org.readium.r2.navigator.NavigatorFragment
           import org.readium.r2.navigator.epub.EpubNavigatorFragment
           import org.readium.r2.navigator.epub.EpubPreferences
           import org.readium.r2.navigator.DecorableNavigator
@@ -676,6 +675,8 @@ jobs:
               private var navigator: Any? = null
               private var currentBookName: String? = null
               private var currentBookFolderUri: Uri? = null
+              /** Publication del libro abierto (para acceso a search, cover, etc). */
+              private var currentPublication: Publication? = null
               private var sidecarJob: Job? = null
               private var lastLocator: Locator? = null
               private var lastTotalPages: Int = 1
@@ -1803,6 +1804,7 @@ jobs:
                           ?: error("Readium no pudo abrir el archivo: " +
                               "${publicationResult.failureOrNull()?.message ?: "error desconocido"}")
           
+                      currentPublication = publication
                       chapters = publication.readingOrder
                       tableOfContents = publication.tableOfContents
                       chapterIndex = 0
@@ -2162,6 +2164,7 @@ jobs:
                   }
                   navigator = null
                   currentBookName = null
+                  currentPublication = null
                   exitImmersive()
                   settingsPanel.visibility = View.GONE
                   settingsVisible = false
@@ -2325,7 +2328,10 @@ jobs:
           
               @OptIn(ExperimentalReadiumApi::class)
               private suspend fun performSearch(nav: EpubNavigatorFragment, query: String) {
-                  val pub = (nav as? NavigatorFragment)?.publication ?: return
+                  val pub = currentPublication ?: run {
+                      Toast.makeText(this, "No hay libro abierto", Toast.LENGTH_SHORT).show()
+                      return
+                  }
                   val iterator = pub.search(query) ?: run {
                       Toast.makeText(this, "Este libro no soporta búsqueda", Toast.LENGTH_SHORT).show()
                       return
