@@ -98,7 +98,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 33
+                  versionCode = 34
                   versionName = "3.6"
               }
           
@@ -1249,7 +1249,7 @@ jobs:
                   sectionEpub.addView(labelSmall("Justificación"))
                   val justifyRow = chipRow()
                   // v32: si no hay preferencia (""), marcar "Justificado" como activo (default Readium).
-                    justifyRow.addView(chip("Justificado", activeWhen = { val v = prefs().getString("pref_epub_align", ""); v.isEmpty() || v == "JUSTIFY" }) { applyEpubJustify("JUSTIFY") })
+                    justifyRow.addView(chip("Justificado", activeWhen = { val v = prefs().getString("pref_epub_align", ""); v.isNullOrEmpty() || v == "JUSTIFY" }) { applyEpubJustify("JUSTIFY") })
                     justifyRow.addView(chip("Izquierda", activeWhen = { prefs().getString("pref_epub_align", "") == "LEFT" }) { applyEpubJustify("LEFT") })
                     sectionEpub.addView(justifyRow)
           
