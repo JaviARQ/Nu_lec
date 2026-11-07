@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 38
-                  versionName = "4.0"
+                  versionCode = 41
+                  versionName = "4.3"
               }
           
               buildTypes {
@@ -1155,6 +1155,11 @@ jobs:
                   sectionGeneral.addView(appThemeRow)
           
                   sectionGeneral.addView(labelSmall("Brillo"))
+                  // v39: opcion Auto (por defecto) que respeta el brillo del sistema.
+                  val brightAutoRow = chipRow()
+                  brightAutoRow.addView(chip("Auto", activeWhen = { prefs().getBoolean("pref_brightness_auto", true) }) { applyBrightnessAuto(true) })
+                  brightAutoRow.addView(chip("Manual", activeWhen = { !prefs().getBoolean("pref_brightness_auto", true) }) { applyBrightnessAuto(false) })
+                  sectionGeneral.addView(brightAutoRow)
                   val brightnessRow = chipRow()
                   brightnessSeekBar = SeekBar(this).apply {
                       max = 100
@@ -1868,11 +1873,13 @@ jobs:
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
-                                  saveLocator(displayName, locator)
-                                  sidecarJob?.cancel()
-                                  sidecarJob = appScope.launch {
-                                      delay(2000)
-                                      saveSidecar(displayName, locator, currentHighlights.toList())
+                                  if (!navigatingToHighlight) {
+                                      saveLocator(displayName, locator)
+                                      sidecarJob?.cancel()
+                                      sidecarJob = appScope.launch {
+                                          delay(2000)
+                                          saveSidecar(displayName, locator, currentHighlights.toList())
+                                      }
                                   }
                                   updateProgress(locator)
                               }
@@ -1922,18 +1929,24 @@ jobs:
                               // v32: si venimos de "Todas las citas", navegar al locator pendiente.
                               pendingHighlightLocator?.let { loc ->
                                   delay(500)  // Esperar a que el navigator esté listo.
+                                  navigatingToHighlight = true
                                   (navigator as? EpubNavigatorFragment)?.go(loc)
                                   pendingHighlightLocator = null
+                                  // Tras 3 segundos, permitir guardar de nuevo la posicion.
+                                  delay(3000)
+                                  navigatingToHighlight = false
                               }
                           }
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
-                                  saveLocator(displayName, locator)
-                                  sidecarJob?.cancel()
-                                  sidecarJob = appScope.launch {
-                                      delay(2000)
-                                      saveSidecar(displayName, locator, currentHighlights.toList())
+                                  if (!navigatingToHighlight) {
+                                      saveLocator(displayName, locator)
+                                      sidecarJob?.cancel()
+                                      sidecarJob = appScope.launch {
+                                          delay(2000)
+                                          saveSidecar(displayName, locator, currentHighlights.toList())
+                                      }
                                   }
                                   updateProgress(locator)
                               }
@@ -2117,8 +2130,14 @@ jobs:
                       // Mostrar/ocultar secciones del panel segun el contexto
                       // (biblioteca: solo GENERAL; lector EPUB: GENERAL+EPUB; lector Comic: GENERAL+COMIC).
                       updateSettingsSections()
-                      brightnessSeekBar.progress = (loadActiveBrightness() * 100).toInt().coerceIn(0, 100)
-                      brightnessValue.text = "${brightnessSeekBar.progress}%"
+                      // v39: ocultar seekbar si Auto está activado.
+                      val auto = prefs().getBoolean("pref_brightness_auto", true)
+                      brightnessSeekBar.visibility = if (auto) View.GONE else View.VISIBLE
+                      brightnessValue.visibility = if (auto) View.GONE else View.VISIBLE
+                      if (!auto) {
+                          brightnessSeekBar.progress = (loadActiveBrightness() * 100).toInt().coerceIn(0, 100)
+                          brightnessValue.text = "${brightnessSeekBar.progress}%"
+                      }
                       // Actualizar el valor mostrado del tamaño de fuente.
                       val fs = loadFontSize() ?: 1.0
                       fontSizeValue.text = "${(fs * 100).toInt()}%"
@@ -2165,6 +2184,9 @@ jobs:
                   navigator = null
                   currentBookName = null
                   currentPublication = null
+                  preHighlightLocator = null
+                  preHighlightBookName = null
+                  navigatingToHighlight = false
                   exitImmersive()
                   settingsPanel.visibility = View.GONE
                   settingsVisible = false
@@ -2367,6 +2389,8 @@ jobs:
                       .setItems(items) { _, which ->
                           val loc = results[which]
                           val nav = navigator as? EpubNavigatorFragment ?: return@setItems
+                          // v39: guardar posicion actual antes de saltar al resultado.
+                          preHighlightLocator = lastLocator
                           lifecycleScope.launch { nav.go(loc) }
                       }
                       .setNegativeButton("Cerrar", null)
@@ -2620,9 +2644,26 @@ jobs:
               // v22: brillo único global (no hay brillo específico de cómic).
           
               private fun applyBrightness(factor: Float) {
+                  // v39: si Auto está activado, no aplicar brillo manual.
+                  if (prefs().getBoolean("pref_brightness_auto", true)) return
                   val lp = window.attributes
                   lp.screenBrightness = factor.coerceIn(0.01f, 1f)
                   window.attributes = lp
+              }
+          
+              /** v39: activa/desactiva el brillo automatico del sistema. */
+              private fun applyBrightnessAuto(enabled: Boolean) {
+                  prefs().edit().putBoolean("pref_brightness_auto", enabled).apply()
+                  if (enabled) {
+                      // Restaurar brillo del sistema: BRIGHTNESS_OVERRIDE_NONE = -1f
+                      val lp = window.attributes
+                      lp.screenBrightness = -1f
+                      window.attributes = lp
+                  } else {
+                      // Aplicar brillo manual guardado
+                      applyBrightness(loadActiveBrightness())
+                  }
+                  refreshChips()
               }
           
               private fun loadActiveBrightness(): Float =
@@ -2633,7 +2674,14 @@ jobs:
               }
           
               private fun applyActiveBrightness() {
-                  applyBrightness(loadActiveBrightness())
+                  // v39: si Auto está activado, respetar el brillo del sistema.
+                  if (prefs().getBoolean("pref_brightness_auto", true)) {
+                      val lp = window.attributes
+                      lp.screenBrightness = -1f
+                      window.attributes = lp
+                  } else {
+                      applyBrightness(loadActiveBrightness())
+                  }
               }
           
               // ===== Loaders EPUB =====
@@ -2721,7 +2769,33 @@ jobs:
                       return
                   }
                   if (readerRoot.visibility == View.VISIBLE) {
-                      closeBook()
+                      // v39: si saltamos a una cita, Atras vuelve a la posicion anterior.
+                      val pre = preHighlightLocator
+                      val preBook = preHighlightBookName
+                      if (pre != null) {
+                          preHighlightLocator = null
+                          preHighlightBookName = null
+                          if (preBook != null && preBook != currentBookName) {
+                              // Estabamos en OTRO libro: hay que reabrirlo en la posicion guardada.
+                              pendingHighlightLocator = pre
+                              val entry = kotlinx.coroutines.runBlocking { findLibraryEntryByName(preBook) }
+                              if (entry != null) {
+                                  lifecycleScope.launch { openFromLibrary(entry) }
+                              } else {
+                                  // No se encontro el libro: navegar en el actual como fallback.
+                                  lifecycleScope.launch {
+                                      (navigator as? org.readium.r2.navigator.Navigator)?.go(pre)
+                                  }
+                              }
+                          } else {
+                              // Mismo libro: solo navegar a la posicion guardada.
+                              lifecycleScope.launch {
+                                  (navigator as? org.readium.r2.navigator.Navigator)?.go(pre)
+                              }
+                          }
+                      } else {
+                          closeBook()
+                      }
                   } else if (currentFolderUri != null) {
                       goUpFolder()
                   } else {
@@ -3290,6 +3364,11 @@ jobs:
                * cargado, navega al locator del highlight indicado.
                */
               private suspend fun openBookAndGoToHighlight(bookName: String, h: Highlight) {
+                  // v39: si hay un libro abierto, guardar su posicion para poder volver.
+                  if (readerRoot.visibility == View.VISIBLE && lastLocator != null) {
+                      preHighlightLocator = lastLocator
+                      preHighlightBookName = currentBookName
+                  }
                   // Buscar el libro en la biblioteca activa (carpeta actual incluida).
                   val entry = findLibraryEntryByName(bookName)
                   if (entry == null) {
@@ -3304,6 +3383,13 @@ jobs:
           
               /** Locator pendiente de aplicar tras abrir un libro desde "Todas las citas". */
               private var pendingHighlightLocator: Locator? = null
+              /** Flag: cuando es true, el currentLocator.collect NO guarda la posicion
+               *  (estamos navegando a una cita, no queremos sobrescribir la posicion de lectura). */
+              private var navigatingToHighlight: Boolean = false
+              /** Posicion de lectura anterior al salto a una cita (para volver con Atras). */
+              private var preHighlightLocator: Locator? = null
+              /** Nombre del libro donde estabamos leyendo antes del salto a cita. */
+              private var preHighlightBookName: String? = null
           
               /**
                * Busca una entrada en las bibliotecas por nombre de archivo.
