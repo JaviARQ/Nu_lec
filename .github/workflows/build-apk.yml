@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 43
-                  versionName = "4.4"
+                  versionCode = 44
+                  versionName = "4.5"
               }
           
               buildTypes {
@@ -351,7 +351,10 @@ jobs:
               }
           
               inner class VH(val root: LinearLayout) : RecyclerView.ViewHolder(root) {
-                  val cover: ImageView = (root.getChildAt(0) as ImageView)
+                  // v44: el child 0 ahora es un FrameLayout (coverFrame) que contiene
+                  // el ImageView, el ProgressBar y el checkMark.
+                  val coverFrame: android.widget.FrameLayout = (root.getChildAt(0) as android.widget.FrameLayout)
+                  val cover: ImageView = (coverFrame.getChildAt(0) as ImageView)
                   val title: TextView = (root.getChildAt(1) as TextView)
                   val subtitle: TextView = (root.getChildAt(2) as TextView)
                   lateinit var progressBar: android.widget.ProgressBar
