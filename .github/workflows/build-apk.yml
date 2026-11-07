@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 47
-                  versionName = "4.8"
+                  versionCode = 48
+                  versionName = "4.9"
               }
           
               buildTypes {
@@ -1997,12 +1997,8 @@ jobs:
                               delay(300)
                               applyAllDecorations()
                               // v32: si venimos de "Todas las citas", navegar al locator pendiente.
-                              // v46: si venimos de cita, activar flag permanente (no se desactiva con timer).
-                              // Se desactiva solo en closeBook o al volver a posicion anterior.
-                              if (pendingHighlightLocator != null) {
-                                  navigatingToHighlight = true
-                                  pendingHighlightLocator = null
-                              }
+                              // v47: el flag navigatingToHighlight ya se activó en
+                              // openBookAndGoToHighlight ANTES de abrir el libro. No tocar aquí.
                           }
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
@@ -2471,6 +2467,8 @@ jobs:
                           val nav = navigator as? EpubNavigatorFragment ?: return@setItems
                           // v39: guardar posicion actual antes de saltar al resultado.
                           preHighlightLocator = lastLocator
+                          // v47: activar flag antes de saltar para no guardar.
+                          navigatingToHighlight = true
                           lifecycleScope.launch { nav.go(loc) }
                       }
                       .setNegativeButton("Cerrar", null)
@@ -3291,6 +3289,8 @@ jobs:
                                       Toast.makeText(ctx, "Cita sin posición válida", Toast.LENGTH_SHORT).show()
                                       return@setOnClickListener
                                   }
+                                  // v47: activar flag antes de saltar para no guardar.
+                                  navigatingToHighlight = true
                                   dialog?.dismiss()
                                   lifecycleScope.launch { nav.go(loc) }
                               }
@@ -3467,6 +3467,9 @@ jobs:
                   }
                   // Guardar el locator pendiente para navegar tras abrir.
                   pendingHighlightLocator = h.locator
+                  // v47: activar el flag ANTES de abrir, para que el primer
+                  // currentLocator.collect ya lo respete y no guarde la cita como posicion.
+                  navigatingToHighlight = true
                   // Abrir el libro (sincrono: espera a que el navigator esté listo).
                   openFromLibrary(entry)
               }
