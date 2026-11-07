@@ -351,13 +351,10 @@ jobs:
               }
           
               inner class VH(val root: LinearLayout) : RecyclerView.ViewHolder(root) {
-                  // v44: el child 0 ahora es un FrameLayout (coverFrame) que contiene
-                  // el ImageView, el ProgressBar y el checkMark.
-                  val coverFrame: android.widget.FrameLayout = (root.getChildAt(0) as android.widget.FrameLayout)
-                  val cover: ImageView = (coverFrame.getChildAt(0) as ImageView)
-                  val title: TextView = (root.getChildAt(1) as TextView)
-                  val subtitle: TextView = (root.getChildAt(2) as TextView)
-                  lateinit var progressBar: android.widget.ProgressBar
+                  lateinit var cover: ImageView
+                  lateinit var title: TextView
+                  lateinit var subtitle: TextView
+                  lateinit var progressLabel: TextView
                   lateinit var checkMark: TextView
               }
           
@@ -379,7 +376,7 @@ jobs:
                           }
                       }
                   }
-                  // FrameLayout para superponer progressBar y check sobre la portada.
+                  // FrameLayout para superponer porcentaje y check sobre la portada.
                   val coverFrame = android.widget.FrameLayout(ctx).apply {
                       layoutParams = LinearLayout.LayoutParams(dp(100), dp(150))
                   }
@@ -396,27 +393,30 @@ jobs:
                           }
                       }
                   }
-                  // Barra de progreso en la parte inferior de la portada.
-                  val pBar = android.widget.ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
+                  // Etiqueta de porcentaje superpuesta abajo-derecha.
+                  val pctLabel = TextView(ctx).apply {
+                      textSize = 9f
+                      setTextColor(Color.WHITE)
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      setPadding(dp(4), dp(2), dp(4), dp(2))
+                      background = GradientDrawable().apply {
+                          cornerRadius = 6 * density
+                          setColor(0xCC000000.toInt())
+                      }
                       layoutParams = android.widget.FrameLayout.LayoutParams(
-                          android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                          dp(4),
-                          Gravity.BOTTOM
+                          android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                          android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                          Gravity.BOTTOM or Gravity.END
                       )
-                      max = 100
-                      progress = 0
                       visibility = View.GONE
-                      progressTintList = android.content.res.ColorStateList.valueOf(0xFF3B82F6.toInt())
-                      progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x66000000)
-                  }
+                    }
                   // Check verde para libros completados.
                   val check = TextView(ctx).apply {
                       text = "\u2713"
-                      textSize = 18f
+                      textSize = 16f
                       setTextColor(0xFF4CAF50.toInt())
                       setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
                       gravity = Gravity.CENTER
-                      setPadding(dp(2), dp(2), dp(2), dp(2))
                       setBackgroundResource(android.R.color.transparent)
                       layoutParams = android.widget.FrameLayout.LayoutParams(
                           dp(24), dp(24), Gravity.TOP or Gravity.END
@@ -424,7 +424,7 @@ jobs:
                       visibility = View.GONE
                   }
                   coverFrame.addView(cover)
-                  coverFrame.addView(pBar)
+                  coverFrame.addView(pctLabel)
                   coverFrame.addView(check)
                   val title = TextView(ctx).apply {
                       layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -449,11 +449,14 @@ jobs:
                   root.addView(coverFrame)
                   root.addView(title)
                   root.addView(subtitle)
-                  // Guardar referencias al progressBar y check.
+                  // Asignar referencias del VH.
                   val vh = VH(root)
-                  vh.progressBar = pBar
-                  vh.checkMark = check
-                  return vh
+                  vh.cover = cover
+                    vh.title = title
+                    vh.subtitle = subtitle
+                    vh.progressLabel = pctLabel
+                    vh.checkMark = check
+                    return vh
               }
           
               override fun onBindViewHolder(holder: VH, position: Int) {
@@ -467,9 +470,9 @@ jobs:
                       holder.subtitle.text = "${e.bookCount} libros"
                       holder.subtitle.setTextColor(if (isDark) 0xFF8AB4F8.toInt() else 0xFF2563EB.toInt())
                       holder.subtitle.visibility = View.VISIBLE
-                      holder.progressBar.visibility = View.GONE
-                      holder.checkMark.visibility = View.GONE
-                  } else {
+                      holder.progressLabel.visibility = View.GONE
+                        holder.checkMark.visibility = View.GONE
+                    } else {
                       if (e.cover != null) {
                           holder.cover.setImageBitmap(e.cover)
                       } else {
@@ -478,18 +481,18 @@ jobs:
                       holder.title.text = e.title
                       holder.title.setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
                       holder.subtitle.visibility = View.GONE
-                      // v43: mostrar barra de progreso o check de completado.
-                      if (e.progressPct >= 98) {
-                          holder.progressBar.visibility = View.GONE
-                          holder.checkMark.visibility = View.VISIBLE
-                      } else if (e.progressPct >= 0) {
-                          holder.progressBar.progress = e.progressPct
-                          holder.progressBar.visibility = View.VISIBLE
-                          holder.checkMark.visibility = View.GONE
-                      } else {
-                          holder.progressBar.visibility = View.GONE
-                          holder.checkMark.visibility = View.GONE
-                      }
+                      // v43: mostrar porcentaje o check de completado.
+                        if (e.progressPct >= 98) {
+                            holder.progressLabel.visibility = View.GONE
+                            holder.checkMark.visibility = View.VISIBLE
+                        } else if (e.progressPct > 0) {
+                            holder.progressLabel.text = "${e.progressPct}%"
+                            holder.progressLabel.visibility = View.VISIBLE
+                            holder.checkMark.visibility = View.GONE
+                        } else {
+                            holder.progressLabel.visibility = View.GONE
+                            holder.checkMark.visibility = View.GONE
+                        }
                   }
           
                   val cardBg = GradientDrawable().apply {
