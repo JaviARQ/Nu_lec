@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 42
-                  versionName = "4.3"
+                  versionCode = 43
+                  versionName = "4.4"
               }
           
               buildTypes {
@@ -289,6 +289,8 @@ jobs:
               val bookCount: Int = 0,
               /** Solo para BOOK: extension del archivo (epub, cbz, cbr). */
               val extension: String = "epub",
+              /** Porcentaje de progreso de lectura (0-100). -1 = sin progreso. */
+              val progressPct: Int = -1,
           )
           
           /**
@@ -352,6 +354,8 @@ jobs:
                   val cover: ImageView = (root.getChildAt(0) as ImageView)
                   val title: TextView = (root.getChildAt(1) as TextView)
                   val subtitle: TextView = (root.getChildAt(2) as TextView)
+                  lateinit var progressBar: android.widget.ProgressBar
+                  lateinit var checkMark: TextView
               }
           
               override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -372,8 +376,15 @@ jobs:
                           }
                       }
                   }
-                  val cover = ImageView(ctx).apply {
+                  // FrameLayout para superponer progressBar y check sobre la portada.
+                  val coverFrame = android.widget.FrameLayout(ctx).apply {
                       layoutParams = LinearLayout.LayoutParams(dp(100), dp(150))
+                  }
+                  val cover = ImageView(ctx).apply {
+                      layoutParams = android.widget.FrameLayout.LayoutParams(
+                          android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                          android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                      )
                       scaleType = ImageView.ScaleType.CENTER_CROP
                       clipToOutline = true
                       outlineProvider = object : ViewOutlineProvider() {
@@ -382,6 +393,36 @@ jobs:
                           }
                       }
                   }
+                  // Barra de progreso en la parte inferior de la portada.
+                  val pBar = android.widget.ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      layoutParams = android.widget.FrameLayout.LayoutParams(
+                          android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                          dp(4),
+                          Gravity.BOTTOM
+                      )
+                      max = 100
+                      progress = 0
+                      visibility = View.GONE
+                      progressTintList = android.content.res.ColorStateList.valueOf(0xFF3B82F6.toInt())
+                      progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0x66000000)
+                  }
+                  // Check verde para libros completados.
+                  val check = TextView(ctx).apply {
+                      text = "\u2713"
+                      textSize = 18f
+                      setTextColor(0xFF4CAF50.toInt())
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      gravity = Gravity.CENTER
+                      setPadding(dp(2), dp(2), dp(2), dp(2))
+                      setBackgroundResource(android.R.color.transparent)
+                      layoutParams = android.widget.FrameLayout.LayoutParams(
+                          dp(24), dp(24), Gravity.TOP or Gravity.END
+                      )
+                      visibility = View.GONE
+                  }
+                  coverFrame.addView(cover)
+                  coverFrame.addView(pBar)
+                  coverFrame.addView(check)
                   val title = TextView(ctx).apply {
                       layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT)
                       maxLines = 2
@@ -402,10 +443,14 @@ jobs:
                       setPadding(0, dp(2), 0, 0)
                       visibility = View.GONE
                   }
-                  root.addView(cover)
+                  root.addView(coverFrame)
                   root.addView(title)
                   root.addView(subtitle)
-                  return VH(root)
+                  // Guardar referencias al progressBar y check.
+                  val vh = VH(root)
+                  vh.progressBar = pBar
+                  vh.checkMark = check
+                  return vh
               }
           
               override fun onBindViewHolder(holder: VH, position: Int) {
@@ -419,6 +464,8 @@ jobs:
                       holder.subtitle.text = "${e.bookCount} libros"
                       holder.subtitle.setTextColor(if (isDark) 0xFF8AB4F8.toInt() else 0xFF2563EB.toInt())
                       holder.subtitle.visibility = View.VISIBLE
+                      holder.progressBar.visibility = View.GONE
+                      holder.checkMark.visibility = View.GONE
                   } else {
                       if (e.cover != null) {
                           holder.cover.setImageBitmap(e.cover)
@@ -428,6 +475,18 @@ jobs:
                       holder.title.text = e.title
                       holder.title.setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
                       holder.subtitle.visibility = View.GONE
+                      // v43: mostrar barra de progreso o check de completado.
+                      if (e.progressPct >= 98) {
+                          holder.progressBar.visibility = View.GONE
+                          holder.checkMark.visibility = View.VISIBLE
+                      } else if (e.progressPct >= 0) {
+                          holder.progressBar.progress = e.progressPct
+                          holder.progressBar.visibility = View.VISIBLE
+                          holder.checkMark.visibility = View.GONE
+                      } else {
+                          holder.progressBar.visibility = View.GONE
+                          holder.checkMark.visibility = View.GONE
+                      }
                   }
           
                   val cardBg = GradientDrawable().apply {
@@ -1612,12 +1671,14 @@ jobs:
                                   }
                               } else if (isMedia) {
                                   val meta = readMetadata(docUri, name)
+                                  val pct = prefs().getInt("progress_$name", -1)
                                   books.add(LibraryEntry(
                                       fileName = name,
                                       title = meta.first,
                                       cover = meta.second,
                                       documentUri = docUri,
                                       extension = ext,
+                                      progressPct = pct,
                                   ))
                               }
                           }
@@ -2030,6 +2091,10 @@ jobs:
           
                   progressBar.progress = (globalPct * 10).coerceIn(0, 1000)
                   progressText.text = "$globalPct% del libro"
+                  // v43: guardar porcentaje para mostrar en la biblioteca.
+                    currentBookName?.let { bn ->
+                        prefs().edit().putInt("progress_$bn", globalPct).apply()
+                    }
           
                   val chTitle = chapters.getOrNull(chapterIndex)?.title
                   chapterText.text = chTitle
