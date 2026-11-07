@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 46
-                  versionName = "4.7"
+                  versionCode = 47
+                  versionName = "4.8"
               }
           
               buildTypes {
@@ -1882,14 +1882,10 @@ jobs:
                       chapterIndex = 0
           
                       val sidecarData = loadSidecar(displayName)
-                      // v45: si venimos de una cita (pendingHighlightLocator), NO cargar
-                      // la posicion de lectura guardada como initialLocator. Se aplicará
-                      // el pendingHighlightLocator despues. Si no, cargar la posicion normal.
-                      val initialLocator = if (pendingHighlightLocator != null) {
-                          pendingHighlightLocator  // La cita se aplicará como initialLocator.
-                      } else {
-                          sidecarData?.first ?: loadLocator(displayName)
-                      }
+                      // v46: la posicion de lectura SOLO viene de readingpos_ (SharedPreferences).
+                      // Si venimos de una cita (pendingHighlightLocator), ir a la cita.
+                      // Si no, ir a la posicion de lectura guardada.
+                      val initialLocator = pendingHighlightLocator ?: loadLocator(displayName)
                       // Cargar highlights del libro actual (vacío si el sidecar es v1 o no existe).
                       currentHighlights.clear()
                       currentHighlights.addAll(sidecarData?.second ?: emptyList())
@@ -2001,13 +1997,11 @@ jobs:
                               delay(300)
                               applyAllDecorations()
                               // v32: si venimos de "Todas las citas", navegar al locator pendiente.
-                              // v45: pendingHighlightLocator ya se aplicó como initialLocator.
-                              // Solo necesitamos activar el flag para que no se guarde la cita como posicion de lectura.
+                              // v46: si venimos de cita, activar flag permanente (no se desactiva con timer).
+                              // Se desactiva solo en closeBook o al volver a posicion anterior.
                               if (pendingHighlightLocator != null) {
                                   navigatingToHighlight = true
                                   pendingHighlightLocator = null
-                                  delay(3000)
-                                  navigatingToHighlight = false
                               }
                           }
                           lifecycleScope.launch {
@@ -2882,6 +2876,7 @@ jobs:
                               }
                           } else {
                               // Mismo libro: solo navegar a la posicion guardada.
+                              navigatingToHighlight = false
                               lifecycleScope.launch {
                                   (navigator as? org.readium.r2.navigator.Navigator)?.go(pre)
                               }
