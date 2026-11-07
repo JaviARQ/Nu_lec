@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 45
-                  versionName = "4.6"
+                  versionCode = 46
+                  versionName = "4.7"
               }
           
               buildTypes {
@@ -2232,10 +2232,19 @@ jobs:
                   sidecarJob?.cancel()
                   val book = currentBookName
                   val loc = lastLocator
-                  // Snapshot de highlights antes de limpiar para persistirlos junto al locator.
+                  // Snapshot de highlights antes de limpiar para persistirlos.
                   val highlightsSnapshot = currentHighlights.toList()
+                  // v45: si estamos en modo "vista de cita" (navigatingToHighlight),
+                  // NO guardar el locator (que seria el de la cita). Solo guardar highlights
+                  // usando el locator que ya tenia el sidecar (no sobrescribir).
                   if (book != null && loc != null) {
-                      appScope.launch { saveSidecar(book, loc, highlightsSnapshot) }
+                      if (navigatingToHighlight) {
+                          // Vista de cita: guardar highlights pero NO sobrescribir el locator del sidecar.
+                          appScope.launch { saveHighlights(book, highlightsSnapshot) }
+                      } else {
+                          // Lectura normal: guardar locator + highlights.
+                          appScope.launch { saveSidecar(book, loc, highlightsSnapshot) }
+                      }
                   }
                   lastLocator = null
                   lastPageIndex = 0
