@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 44
-                  versionName = "4.5"
+                  versionCode = 45
+                  versionName = "4.6"
               }
           
               buildTypes {
@@ -1882,7 +1882,14 @@ jobs:
                       chapterIndex = 0
           
                       val sidecarData = loadSidecar(displayName)
-                      val initialLocator = sidecarData?.first ?: loadLocator(displayName)
+                      // v45: si venimos de una cita (pendingHighlightLocator), NO cargar
+                      // la posicion de lectura guardada como initialLocator. Se aplicará
+                      // el pendingHighlightLocator despues. Si no, cargar la posicion normal.
+                      val initialLocator = if (pendingHighlightLocator != null) {
+                          pendingHighlightLocator  // La cita se aplicará como initialLocator.
+                      } else {
+                          sidecarData?.first ?: loadLocator(displayName)
+                      }
                       // Cargar highlights del libro actual (vacío si el sidecar es v1 o no existe).
                       currentHighlights.clear()
                       currentHighlights.addAll(sidecarData?.second ?: emptyList())
@@ -1994,12 +2001,11 @@ jobs:
                               delay(300)
                               applyAllDecorations()
                               // v32: si venimos de "Todas las citas", navegar al locator pendiente.
-                              pendingHighlightLocator?.let { loc ->
-                                  delay(500)  // Esperar a que el navigator esté listo.
+                              // v45: pendingHighlightLocator ya se aplicó como initialLocator.
+                              // Solo necesitamos activar el flag para que no se guarde la cita como posicion de lectura.
+                              if (pendingHighlightLocator != null) {
                                   navigatingToHighlight = true
-                                  (navigator as? EpubNavigatorFragment)?.go(loc)
                                   pendingHighlightLocator = null
-                                  // Tras 3 segundos, permitir guardar de nuevo la posicion.
                                   delay(3000)
                                   navigatingToHighlight = false
                               }
@@ -2972,12 +2978,14 @@ jobs:
               private fun prefs() = getSharedPreferences("lector_positions", MODE_PRIVATE)
           
               private fun loadLocator(bookName: String): Locator? {
-                  val json = prefs().getString(bookName, null) ?: return null
+                  // v45: leer de clave separada "readingpos_" que no se afecta por citas.
+                  val json = prefs().getString("readingpos_$bookName", null) ?: return null
                   return runCatching { Locator.fromJSON(JSONObject(json)) }.getOrNull()
               }
           
               private fun saveLocator(bookName: String, locator: Locator) {
-                  prefs().edit().putString(bookName, locator.toJSON().toString()).apply()
+                  // v45: guardar en clave separada "readingpos_" para independizar de citas.
+                  prefs().edit().putString("readingpos_$bookName", locator.toJSON().toString()).apply()
               }
           
               /**
