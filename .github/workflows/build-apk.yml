@@ -98,7 +98,7 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 41
+                  versionCode = 42
                   versionName = "4.3"
               }
           
@@ -2663,8 +2663,15 @@ jobs:
                       // Aplicar brillo manual guardado
                       applyBrightness(loadActiveBrightness())
                   }
-                  refreshChips()
-              }
+                  // v42: actualizar visibilidad del seekbar en tiempo real.
+                    brightnessSeekBar.visibility = if (enabled) View.GONE else View.VISIBLE
+                    brightnessValue.visibility = if (enabled) View.GONE else View.VISIBLE
+                    if (!enabled) {
+                        brightnessSeekBar.progress = (loadActiveBrightness() * 100).toInt().coerceIn(0, 100)
+                        brightnessValue.text = "${brightnessSeekBar.progress}%"
+                    }
+                    refreshChips()
+                }
           
               private fun loadActiveBrightness(): Float =
                   prefs().getFloat("pref_brightness", 0.5f)
