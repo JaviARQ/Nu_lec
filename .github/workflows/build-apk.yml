@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 50
-                  versionName = "5.0"
+                  versionCode = 51
+                  versionName = "5.0.1"
               }
           
               buildTypes {
@@ -314,11 +314,20 @@ jobs:
            * se estaba leyendo. Al volver a abrir el libro desde la biblioteca, si hay
            * un marcador, se pregunta al usuario si quiere recuperarlo (y se elimina).
            * Tambien se pueden crear manualmente desde el lector.
+           *
+           * v51: campo `autoDelete`:
+           *  - true: marcador automatico creado al saltar a cita. Es efimero:
+           *    se muestra en el dialogo al reabrir el libro y se elimina al elegir
+           *    cualquier opcion (es de un solo uso, solo recuerda "donde estaba").
+           *  - false: marcador manual creado por el usuario. Es permanente: aparece
+           *    en el gestor de marcadores y NO se borra al reabrir el libro. Solo
+           *    se elimina si el usuario lo borra explicitamente desde el gestor.
            */
           data class Bookmark(
               val id: String,
               val locator: Locator,
               val label: String = "",
+              val autoDelete: Boolean = false,
               val createdAt: String
           )
           EOF
@@ -1858,6 +1867,9 @@ jobs:
                   // v50: si NO venimos de una cita y hay un marcador guardado en el sidecar,
                   // preguntar al usuario si quiere recuperar la ultima posicion de lectura.
                   // El marcador se elimina al aceptar (es de un solo uso).
+                  // v51: solo se consideran los marcadores automaticos (autoDelete=true).
+                  // Los marcadores manuales (autoDelete=false) son permanentes: NO se
+                  // muestran en este dialogo, solo en el gestor de marcadores.
                   val cameFromHighlight = pendingHighlightLocator != null
                   openInternal(
                       uri = entry.documentUri,
@@ -1865,23 +1877,25 @@ jobs:
                       title = entry.title,
                       extension = entry.extension,
                   )
-                  if (!cameFromHighlight && currentBookmarks.isNotEmpty()) {
-                      val bm = currentBookmarks.last()
+                  val autoBm = currentBookmarks.lastOrNull { it.autoDelete }
+                  if (!cameFromHighlight && autoBm != null) {
                       val book = entry.fileName
+                      val bm = autoBm
                       AlertDialog.Builder(this)
                           .setTitle("Marcador encontrado")
-                          .setMessage("Existe un marcador de posición para este libro. ¿Quieres recuperarlo y continuar desde ahí?")
+                          .setMessage("Existe un marcador automático de posición para este libro (creado antes de saltar a una cita). ¿Quieres recuperarlo y continuar desde ahí?")
                           .setPositiveButton("Sí, recuperar") { _, _ ->
                               lifecycleScope.launch {
                                   (navigator as? org.readium.r2.navigator.Navigator)?.go(bm.locator)
-                                  // Eliminar el marcador (ya consumido).
+                                  // v51: solo eliminar el marcador automatico consumido.
                                   currentBookmarks.removeAll { it.id == bm.id }
                                   saveSidecarFull(book, currentHighlights.toList(), currentBookmarks.toList())
                                   Toast.makeText(this@MainActivity, "Posición recuperada", Toast.LENGTH_SHORT).show()
                               }
                           }
                           .setNegativeButton("No, empezar donde lo dejé") { _, _ ->
-                              // Eliminar el marcador sin navegar: la readingpos_ normal ya cargó.
+                              // Eliminar el marcador automatico sin navegar: la readingpos_ normal ya cargó.
+                              // Los marcadores manuales se conservan.
                               lifecycleScope.launch {
                                   currentBookmarks.removeAll { it.id == bm.id }
                                   saveSidecarFull(book, currentHighlights.toList(), currentBookmarks.toList())
@@ -3173,6 +3187,7 @@ jobs:
                       id = json.getString("id"),
                       locator = loc,
                       label = json.optString("label", ""),
+                      autoDelete = json.optBoolean("autoDelete", false),
                       createdAt = json.optString("createdAt", ""),
                   )
               } catch (_: Throwable) { null }
@@ -3182,6 +3197,7 @@ jobs:
                   put("id", b.id)
                   put("locator", b.locator.toJSON())
                   put("label", b.label)
+                  put("autoDelete", b.autoDelete)
                   put("createdAt", b.createdAt)
               }
           
@@ -3278,12 +3294,17 @@ jobs:
           
               // ===== v50: BOOKMARKS (marcadores) =====
           
-              /** Añade un marcador al libro actual y lo persiste. */
-              private suspend fun addBookmark(bookName: String, locator: Locator, label: String = "") {
+              /**
+               * Añade un marcador al libro actual y lo persiste.
+               * v51: autoDelete=false por defecto (marcador manual permanente).
+               * Solo los marcadores automaticos creados al saltar a una cita usan autoDelete=true.
+               */
+              private suspend fun addBookmark(bookName: String, locator: Locator, label: String = "", autoDelete: Boolean = false) {
                   val b = Bookmark(
                       id = "bm_${System.currentTimeMillis()}",
                       locator = locator,
                       label = label,
+                      autoDelete = autoDelete,
                       createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                   )
                   currentBookmarks.add(b)
@@ -3478,9 +3499,12 @@ jobs:
               /**
                * v50: Diálogo con los marcadores del libro actual.
                * Permite:
-               *  - Crear un marcador manual en la posición actual.
+               *  - Crear un marcador manual en la posición actual (pide nombre).
                *  - Pulsar un marcador para navegar a él (sin eliminarlo).
                *  - Eliminar marcadores individuales.
+               * v51: distingue entre marcadores manuales (permanentes) y automáticos
+               * (de cita, efímeros). Los automáticos se muestran con etiqueta "Antes de cita"
+               * y un icono distinto.
                */
               private fun showBookBookmarks() {
                   val book = currentBookName ?: return
@@ -3506,12 +3530,26 @@ jobs:
                               Toast.makeText(ctx, "No hay posición disponible", Toast.LENGTH_SHORT).show()
                               return@setOnClickListener
                           }
-                          lifecycleScope.launch {
-                              addBookmark(book, loc, "Marcador manual")
-                              Toast.makeText(ctx, "Marcador añadido", Toast.LENGTH_SHORT).show()
-                              dialog?.dismiss()
-                              showBookBookmarks()
+                          // v51: pedir nombre del marcador antes de crearlo.
+                          val nameInput = android.widget.EditText(ctx).apply {
+                              hint = "Nombre del marcador (opcional)"
+                              setPadding(dp(12), dp(12), dp(12), dp(12))
                           }
+                          AlertDialog.Builder(ctx)
+                              .setTitle("Nuevo marcador")
+                              .setView(nameInput)
+                              .setPositiveButton("Crear") { _, _ ->
+                                  val name = nameInput.text.toString().trim()
+                                  val label = if (name.isNotEmpty()) name else "Marcador"
+                                  lifecycleScope.launch {
+                                      addBookmark(book, loc, label, autoDelete = false)
+                                      Toast.makeText(ctx, "Marcador \"$label\" añadido", Toast.LENGTH_SHORT).show()
+                                      dialog?.dismiss()
+                                      showBookBookmarks()
+                                  }
+                              }
+                              .setNegativeButton("Cancelar", null)
+                              .show()
                       }
                   }
                   container.addView(addBtn)
@@ -3545,15 +3583,19 @@ jobs:
                                       Toast.makeText(ctx, "No hay navigator activo", Toast.LENGTH_SHORT).show()
                                       return@setOnClickListener
                                   }
-                                  // Navegamos sin activar navigatingToHighlight: queremos que
-                                  // se reanude el guardado normal de posicion al pasar pagina
-                                  // (el marcador queda para futuras recuperaciones).
                                   dialog?.dismiss()
                                   lifecycleScope.launch { nav.go(b.locator) }
                               }
                           }
+                          // v51: distinguir manual (🔖) de automático (🔖⚡ / "Antes de cita").
+                          val icon = if (b.autoDelete) "🔖⚡" else "🔖"
+                          val labelText = when {
+                              b.autoDelete -> "Antes de cita (automático)"
+                              b.label.isNotEmpty() -> b.label
+                              else -> "Marcador"
+                          }
                           val labelTv = TextView(ctx).apply {
-                              text = if (b.label.isNotEmpty()) "🔖 ${b.label}" else "🔖 Marcador"
+                              text = "$icon $labelText"
                               textSize = 14f
                               setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
                               setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
@@ -3710,17 +3752,21 @@ jobs:
                   // v50: si hay un libro abierto, crear un marcador con la posicion actual.
                   // El marcador vive en el sidecar JSON del libro origen (NO en el destino).
                   // Es completamente independiente de readingpos_ y de las citas.
+                  // v51: el marcador automatico tiene autoDelete=true para que se elimine
+                  // al recuperar (es de un solo uso). Los marcadores manuales (autoDelete=false)
+                  // NO se ven afectados por el dialogo de recuperacion.
                   if (readerRoot.visibility == View.VISIBLE && lastLocator != null) {
                       val srcBook = currentBookName
                       val srcLoc = lastLocator!!
                       if (srcBook != null) {
-                          // Crear marcador: si hay varios, nos quedamos solo con el ultimo
-                          // (el mas reciente) para no acumular marcadores obsoletos.
-                          currentBookmarks.clear()
+                          // Eliminar cualquier marcador automatico previo (solo nos interesa
+                          // el mas reciente). Los marcadores manuales se conservan.
+                          currentBookmarks.removeAll { it.autoDelete }
                           currentBookmarks.add(Bookmark(
                               id = "bm_${System.currentTimeMillis()}",
                               locator = srcLoc,
                               label = "Antes de cita",
+                              autoDelete = true,
                               createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                           ))
                           saveSidecarFull(srcBook, currentHighlights.toList(), currentBookmarks.toList())
