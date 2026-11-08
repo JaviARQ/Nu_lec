@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 49
-                  versionName = "4.9.1"
+                  versionCode = 50
+                  versionName = "5.0"
               }
           
               buildTypes {
@@ -304,6 +304,21 @@ jobs:
               val locator: Locator?,
               val color: String = "yellow",
               val note: String = "",
+              val createdAt: String
+          )
+          
+          /**
+           * v50: Bookmark (marcador de posicion de lectura).
+           * Independiente de las citas (highlights) y de la posicion de lectura (readingpos_).
+           * Se crea automaticamente al saltar a una cita para guardar el punto donde
+           * se estaba leyendo. Al volver a abrir el libro desde la biblioteca, si hay
+           * un marcador, se pregunta al usuario si quiere recuperarlo (y se elimina).
+           * Tambien se pueden crear manualmente desde el lector.
+           */
+          data class Bookmark(
+              val id: String,
+              val locator: Locator,
+              val label: String = "",
               val createdAt: String
           )
           EOF
@@ -715,6 +730,8 @@ jobs:
               private lateinit var btnNextChapter: ImageButton
               /** Botón de citas en la top bar del lector (solo visible en EPUB). */
               private lateinit var btnHighlights: ImageButton
+              /** v50: Botón de marcadores en la top bar del lector. */
+              private lateinit var btnBookmarks: ImageButton
           
               // ----- Vistas: PANEL AJUSTES -----
               // settingsPanel es el ScrollView (overlay), settingsContent es la tarjeta interior.
@@ -751,6 +768,8 @@ jobs:
               private var chapterIndex: Int = -1
               /** Highlights del libro actualmente abierto (en memoria, persistidos en sidecar). */
               private var currentHighlights: MutableList<Highlight> = mutableListOf()
+              /** v50: Marcadores del libro actualmente abierto (en memoria, persistidos en sidecar). */
+              private var currentBookmarks: MutableList<Bookmark> = mutableListOf()
               /** Handler para auto-ocultar los overlays del lector tras unos segundos. */
               private val overlayHideHandler = Handler(Looper.getMainLooper())
               private val overlayHideRunnable = Runnable {
@@ -1020,6 +1039,15 @@ jobs:
                       setOnClickListener { showBookHighlights() }
                   }
                   topBar.addView(btnHighlights)
+                  // v50: Botón de marcadores (entre citas y ajustes).
+                  // Visible tanto en EPUB como en comics (los marcadores funcionan en ambos).
+                  btnBookmarks = ImageButton(this).apply {
+                      setImageResource(R.drawable.ic_bookmarks)
+                      background = null
+                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      setOnClickListener { showBookBookmarks() }
+                  }
+                  topBar.addView(btnBookmarks)
                   topBar.addView(ImageButton(this).apply {
                       setImageResource(R.drawable.ic_settings)
                       background = null
@@ -1827,12 +1855,41 @@ jobs:
           
               private suspend fun openFromLibrary(entry: LibraryEntry) {
                   currentBookFolderUri = currentFolderUri ?: activeTreeUri()
+                  // v50: si NO venimos de una cita y hay un marcador guardado en el sidecar,
+                  // preguntar al usuario si quiere recuperar la ultima posicion de lectura.
+                  // El marcador se elimina al aceptar (es de un solo uso).
+                  val cameFromHighlight = pendingHighlightLocator != null
                   openInternal(
                       uri = entry.documentUri,
                       displayName = entry.fileName,
                       title = entry.title,
                       extension = entry.extension,
                   )
+                  if (!cameFromHighlight && currentBookmarks.isNotEmpty()) {
+                      val bm = currentBookmarks.last()
+                      val book = entry.fileName
+                      AlertDialog.Builder(this)
+                          .setTitle("Marcador encontrado")
+                          .setMessage("Existe un marcador de posición para este libro. ¿Quieres recuperarlo y continuar desde ahí?")
+                          .setPositiveButton("Sí, recuperar") { _, _ ->
+                              lifecycleScope.launch {
+                                  (navigator as? org.readium.r2.navigator.Navigator)?.go(bm.locator)
+                                  // Eliminar el marcador (ya consumido).
+                                  currentBookmarks.removeAll { it.id == bm.id }
+                                  saveSidecarFull(book, currentHighlights.toList(), currentBookmarks.toList())
+                                  Toast.makeText(this@MainActivity, "Posición recuperada", Toast.LENGTH_SHORT).show()
+                              }
+                          }
+                          .setNegativeButton("No, empezar donde lo dejé") { _, _ ->
+                              // Eliminar el marcador sin navegar: la readingpos_ normal ya cargó.
+                              lifecycleScope.launch {
+                                  currentBookmarks.removeAll { it.id == bm.id }
+                                  saveSidecarFull(book, currentHighlights.toList(), currentBookmarks.toList())
+                              }
+                          }
+                          .setCancelable(false)
+                          .show()
+                  }
               }
           
               private suspend fun openEpubExternal(uri: Uri) {
@@ -1881,14 +1938,16 @@ jobs:
                       tableOfContents = publication.tableOfContents
                       chapterIndex = 0
           
-                      val initialHighlights = loadHighlightsFromSidecar(displayName)
+                      val (initialHighlights, initialBookmarks) = loadSidecarFull(displayName)
                       // v48: la posicion de lectura SOLO viene de readingpos_ (SharedPreferences).
                       // Si venimos de una cita (pendingHighlightLocator), ir a la cita.
                       // Si no, ir a la posicion de lectura guardada.
                       val initialLocator = pendingHighlightLocator ?: loadLocator(displayName)
-                      // Cargar highlights del libro actual (vacío si no hay sidecar).
+                      // Cargar highlights Y bookmarks del libro actual.
                       currentHighlights.clear()
                       currentHighlights.addAll(initialHighlights)
+                      currentBookmarks.clear()
+                      currentBookmarks.addAll(initialBookmarks)
           
                       libraryRoot.visibility = View.GONE
                       readerRoot.visibility = View.VISIBLE
@@ -1943,7 +2002,7 @@ jobs:
                                       sidecarJob?.cancel()
                                       sidecarJob = appScope.launch {
                                           delay(2000)
-                                          saveHighlightsToSidecar(displayName, currentHighlights.toList())
+                                          saveSidecarFull(displayName, currentHighlights.toList(), currentBookmarks.toList())
                                       }
                                   }
                                   updateProgress(locator)
@@ -1995,6 +2054,9 @@ jobs:
                               // v47: el flag navigatingToHighlight ya se activó en
                               // openBookAndGoToHighlight ANTES de abrir el libro. No tocar aquí.
                           }
+                          // v50: resetear pendingHighlightLocator después de usarlo como initialLocator.
+                          // Sin esto, la proxima apertura desde biblioteca pensaria que viene de cita.
+                          pendingHighlightLocator = null
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
@@ -2003,7 +2065,7 @@ jobs:
                                       sidecarJob?.cancel()
                                       sidecarJob = appScope.launch {
                                           delay(2000)
-                                          saveHighlightsToSidecar(displayName, currentHighlights.toList())
+                                          saveSidecarFull(displayName, currentHighlights.toList(), currentBookmarks.toList())
                                       }
                                   }
                                   updateProgress(locator)
@@ -2216,14 +2278,14 @@ jobs:
               private fun closeBook() {
                   sidecarJob?.cancel()
                   val book = currentBookName
-                  // Snapshot de highlights antes de limpiar para persistirlos.
+                  // Snapshot de highlights y bookmarks antes de limpiar para persistirlos.
                   val highlightsSnapshot = currentHighlights.toList()
-                  // v48: SIEMPRE guardar highlights en el sidecar (no hay locator
-                  // en el sidecar, solo highlights). La posicion de lectura vive
-                  // exclusivamente en SharedPreferences (readingpos_<bookName>)
+                  val bookmarksSnapshot = currentBookmarks.toList()
+                  // v50: SIEMPRE guardar highlights Y bookmarks en el sidecar.
+                  // La posicion de lectura vive en SharedPreferences readingpos_<bookName>
                   // y se guarda solo cuando navigatingToHighlight = false.
                   if (book != null) {
-                      appScope.launch { saveHighlightsToSidecar(book, highlightsSnapshot) }
+                      appScope.launch { saveSidecarFull(book, highlightsSnapshot, bookmarksSnapshot) }
                   }
                   lastLocator = null
                   lastPageIndex = 0
@@ -2232,6 +2294,7 @@ jobs:
                   tableOfContents = emptyList()
                   chapterIndex = -1
                   currentHighlights.clear()
+                  currentBookmarks.clear()
                   navigator?.let {
                       try {
                           (it as? android.app.Fragment)?.let { frag ->
@@ -3033,30 +3096,48 @@ jobs:
                   }
               }
           
-              private suspend fun loadHighlightsFromSidecar(bookName: String): List<Highlight> {
-                  // v48: lee SOLO los highlights del sidecar JSON. La posicion de lectura
-                  // ya no se guarda aqui (vive en SharedPreferences readingpos_<bookName>).
-                  // Backward-compat: sidecars viejos con campo `locator` se ignoran.
-                  val uri = findSidecarUri(bookName) ?: return emptyList()
+              private suspend fun loadSidecarFull(bookName: String): Pair<List<Highlight>, List<Bookmark>> {
+                  // v50: lee highlights Y bookmarks del sidecar JSON. La posicion de lectura
+                  // vive en SharedPreferences readingpos_<bookName> (no se lee aqui).
+                  // Backward-compat: sidecars viejos con campo `locator` se ignoran;
+                  // los `highlights` existentes se conservan; los `bookmarks` son nuevos
+                  // (si no existen, se devuelve lista vacía).
+                  val uri = findSidecarUri(bookName) ?: return emptyList<Highlight>() to emptyList<Bookmark>()
                   return withContext(Dispatchers.IO) {
                       val text = contentResolver.openInputStream(uri)?.use {
                           it.readBytes().toString(Charsets.UTF_8)
-                      } ?: return@withContext emptyList()
+                      } ?: return@withContext emptyList<Highlight>() to emptyList<Bookmark>()
                       try {
                           val json = JSONObject(text)
                           val highlights = mutableListOf<Highlight>()
-                          val arr = json.optJSONArray("highlights")
-                          if (arr != null) {
-                              for (i in 0 until arr.length()) {
-                                  val hj = arr.optJSONObject(i) ?: continue
+                          val hArr = json.optJSONArray("highlights")
+                          if (hArr != null) {
+                              for (i in 0 until hArr.length()) {
+                                  val hj = hArr.optJSONObject(i) ?: continue
                                   jsonToHighlight(hj)?.let { highlights.add(it) }
                               }
                           }
-                          highlights.toList()
+                          val bookmarks = mutableListOf<Bookmark>()
+                          val bArr = json.optJSONArray("bookmarks")
+                          if (bArr != null) {
+                              for (i in 0 until bArr.length()) {
+                                  val bj = bArr.optJSONObject(i) ?: continue
+                                  jsonToBookmark(bj)?.let { bookmarks.add(it) }
+                              }
+                          }
+                          highlights.toList() to bookmarks.toList()
                       } catch (_: Throwable) {
-                          emptyList()
+                          emptyList<Highlight>() to emptyList<Bookmark>()
                       }
                   }
+              }
+          
+              private suspend fun loadHighlightsFromSidecar(bookName: String): List<Highlight> {
+                  return loadSidecarFull(bookName).first
+              }
+          
+              private suspend fun loadBookmarksFromSidecar(bookName: String): List<Bookmark> {
+                  return loadSidecarFull(bookName).second
               }
           
               /** Convierte un JSONObject (de un elemento del array `highlights`) a Highlight. */
@@ -3083,24 +3164,51 @@ jobs:
                   put("createdAt", h.createdAt)
               }
           
-              private suspend fun saveHighlightsToSidecar(bookName: String, highlights: List<Highlight>) {
-                  // v48: guarda SOLO highlights en el sidecar JSON. Sin locator.
-                  // La posicion de lectura vive en SharedPreferences (readingpos_<bookName>).
-                  // Esto independiza completamente las citas de la posicion de lectura:
-                  // añadir/eliminar/modificar citas NUNCA toca la posicion guardada.
+              /** v50: Convierte un JSONObject a Bookmark. */
+              private fun jsonToBookmark(json: JSONObject): Bookmark? = try {
+                  val loc = json.optJSONObject("locator")?.let {
+                      runCatching { Locator.fromJSON(it) }.getOrNull()
+                  } ?: return null
+                  Bookmark(
+                      id = json.getString("id"),
+                      locator = loc,
+                      label = json.optString("label", ""),
+                      createdAt = json.optString("createdAt", ""),
+                  )
+              } catch (_: Throwable) { null }
+          
+              /** v50: Convierte un Bookmark a JSONObject. */
+              private fun bookmarkToJson(b: Bookmark): JSONObject = JSONObject().apply {
+                  put("id", b.id)
+                  put("locator", b.locator.toJSON())
+                  put("label", b.label)
+                  put("createdAt", b.createdAt)
+              }
+          
+              private suspend fun saveSidecarFull(bookName: String, highlights: List<Highlight>, bookmarks: List<Bookmark>) {
+                  // v50: guarda highlights Y bookmarks en el sidecar JSON. Sin locator
+                  // (la posicion de lectura vive en SharedPreferences readingpos_<bookName>).
+                  // Esto independiza completamente las citas y marcadores de la posicion
+                  // de lectura: añadir/eliminar/modificar citas o marcadores NUNCA toca
+                  // la posicion guardada.
                   val tree = bookTreeUri() ?: return
                   val folderUri = currentBookFolderUri ?: tree
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
-                  val arr = JSONArray()
+                  val hArr = JSONArray()
                   for (h in highlights) {
-                      arr.put(highlightToJson(h))
+                      hArr.put(highlightToJson(h))
+                  }
+                  val bArr = JSONArray()
+                  for (b in bookmarks) {
+                      bArr.put(bookmarkToJson(b))
                   }
                   val json = JSONObject().apply {
-                      put("version", 3)  // v48: version 3 = sin locator (solo highlights)
+                      put("version", 4)  // v50: version 4 = highlights + bookmarks (sin locator)
                       put("bookName", bookName)
                       put("updatedAt",
                           SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
-                      put("highlights", arr)
+                      put("highlights", hArr)
+                      put("bookmarks", bArr)
                   }.toString(2)
                   withContext(Dispatchers.IO) {
                       val folderDocId = if (folderUri == tree)
@@ -3140,14 +3248,12 @@ jobs:
           
               /**
                * Persiste la lista de highlights en el sidecar JSON del libro.
-               * v48: ya no toma locator. Las citas y la posicion viven en almacenes
-               * totalmente separados: highlights en sidecar JSON, posicion en
-               * SharedPreferences readingpos_<bookName>.
+               * v50: guarda highlights Y bookmarks (los bookmarks actuales se conservan).
                */
               private suspend fun saveHighlights(bookName: String, highlights: List<Highlight>) {
                   currentHighlights.clear()
                   currentHighlights.addAll(highlights)
-                  saveHighlightsToSidecar(bookName, currentHighlights.toList())
+                  saveSidecarFull(bookName, currentHighlights.toList(), currentBookmarks.toList())
               }
           
               /** Añade un highlight al libro actual y lo persiste. */
@@ -3161,13 +3267,33 @@ jobs:
                       createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                   )
                   currentHighlights.add(h)
-                  saveHighlightsToSidecar(bookName, currentHighlights.toList())
+                  saveSidecarFull(bookName, currentHighlights.toList(), currentBookmarks.toList())
               }
           
               /** Elimina un highlight por id y persiste el sidecar actualizado. */
               private suspend fun removeHighlight(bookName: String, highlightId: String) {
                   currentHighlights.removeAll { it.id == highlightId }
-                  saveHighlightsToSidecar(bookName, currentHighlights.toList())
+                  saveSidecarFull(bookName, currentHighlights.toList(), currentBookmarks.toList())
+              }
+          
+              // ===== v50: BOOKMARKS (marcadores) =====
+          
+              /** Añade un marcador al libro actual y lo persiste. */
+              private suspend fun addBookmark(bookName: String, locator: Locator, label: String = "") {
+                  val b = Bookmark(
+                      id = "bm_${System.currentTimeMillis()}",
+                      locator = locator,
+                      label = label,
+                      createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                  )
+                  currentBookmarks.add(b)
+                  saveSidecarFull(bookName, currentHighlights.toList(), currentBookmarks.toList())
+              }
+          
+              /** Elimina un marcador por id y persiste el sidecar actualizado. */
+              private suspend fun removeBookmark(bookName: String, bookmarkId: String) {
+                  currentBookmarks.removeAll { it.id == bookmarkId }
+                  saveSidecarFull(bookName, currentHighlights.toList(), currentBookmarks.toList())
               }
           
               /**
@@ -3350,6 +3476,130 @@ jobs:
               }
           
               /**
+               * v50: Diálogo con los marcadores del libro actual.
+               * Permite:
+               *  - Crear un marcador manual en la posición actual.
+               *  - Pulsar un marcador para navegar a él (sin eliminarlo).
+               *  - Eliminar marcadores individuales.
+               */
+              private fun showBookBookmarks() {
+                  val book = currentBookName ?: return
+                  val ctx = this
+                  val bookmarks = currentBookmarks.toList()
+                  val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+                  var dialog: AlertDialog? = null
+          
+                  val container = LinearLayout(ctx).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(8), dp(16), dp(8))
+                  }
+          
+                  // Botón "+ Añadir marcador aquí"
+                  val addBtn = Button(ctx).apply {
+                      text = "+ Añadir marcador en posición actual"
+                      setAllCaps(false)
+                      setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                      textSize = 12f
+                      setOnClickListener {
+                          val loc = lastLocator
+                          if (loc == null) {
+                              Toast.makeText(ctx, "No hay posición disponible", Toast.LENGTH_SHORT).show()
+                              return@setOnClickListener
+                          }
+                          lifecycleScope.launch {
+                              addBookmark(book, loc, "Marcador manual")
+                              Toast.makeText(ctx, "Marcador añadido", Toast.LENGTH_SHORT).show()
+                              dialog?.dismiss()
+                              showBookBookmarks()
+                          }
+                      }
+                  }
+                  container.addView(addBtn)
+          
+                  if (bookmarks.isEmpty()) {
+                      val tv = TextView(ctx).apply {
+                          text = "No hay marcadores. Pulsa \"Añadir marcador\" para crear uno en la posición actual."
+                          textSize = 13f
+                          setPadding(dp(8), dp(12), dp(8), dp(12))
+                          setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                      }
+                      container.addView(tv)
+                  } else {
+                      for (b in bookmarks) {
+                          val row = LinearLayout(ctx).apply {
+                              orientation = LinearLayout.VERTICAL
+                              setPadding(dp(12), dp(10), dp(12), dp(10))
+                              background = GradientDrawable().apply {
+                                  cornerRadius = 12 * density
+                                  setColor(if (isDark) 0xFF2A2A2A.toInt() else 0xFFEEEEEE.toInt())
+                              }
+                              val lp = LinearLayout.LayoutParams(
+                                  LinearLayout.LayoutParams.MATCH_PARENT,
+                                  LinearLayout.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(8) }
+                              layoutParams = lp
+                              // Pulsar el marcador navega a su posición (sin eliminarlo).
+                              setOnClickListener {
+                                  val nav = navigator as? org.readium.r2.navigator.Navigator
+                                  if (nav == null) {
+                                      Toast.makeText(ctx, "No hay navigator activo", Toast.LENGTH_SHORT).show()
+                                      return@setOnClickListener
+                                  }
+                                  // Navegamos sin activar navigatingToHighlight: queremos que
+                                  // se reanude el guardado normal de posicion al pasar pagina
+                                  // (el marcador queda para futuras recuperaciones).
+                                  dialog?.dismiss()
+                                  lifecycleScope.launch { nav.go(b.locator) }
+                              }
+                          }
+                          val labelTv = TextView(ctx).apply {
+                              text = if (b.label.isNotEmpty()) "🔖 ${b.label}" else "🔖 Marcador"
+                              textSize = 14f
+                              setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                              setTextColor(if (isDark) 0xFFEDEDED.toInt() else 0xFF1A1A1A.toInt())
+                          }
+                          row.addView(labelTv)
+                          val dateTv = TextView(ctx).apply {
+                              text = b.createdAt
+                              textSize = 10f
+                              setTextColor(0xFF888888.toInt())
+                              setPadding(0, dp(4), 0, dp(6))
+                          }
+                          row.addView(dateTv)
+                          val actionsRow = LinearLayout(ctx).apply {
+                              orientation = LinearLayout.HORIZONTAL
+                              gravity = Gravity.END
+                          }
+                          val deleteBtn = Button(ctx).apply {
+                              text = "Eliminar"
+                              setAllCaps(false)
+                              setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD))
+                              textSize = 11f
+                              setOnClickListener {
+                                  lifecycleScope.launch {
+                                      removeBookmark(book, b.id)
+                                      Toast.makeText(ctx, "Marcador eliminado", Toast.LENGTH_SHORT).show()
+                                      dialog?.dismiss()
+                                      showBookBookmarks()
+                                  }
+                              }
+                          }
+                          actionsRow.addView(deleteBtn)
+                          row.addView(actionsRow)
+                          container.addView(row)
+                      }
+                  }
+          
+                  val scrollView = ScrollView(ctx).apply { addView(container) }
+                  dialog = AlertDialog.Builder(ctx)
+                      .setTitle("Marcadores: ${book.substringBeforeLast('.')}")
+                      .setView(scrollView)
+                      .setNegativeButton("Cerrar", null)
+                      .create()
+                  dialog?.show()
+              }
+          
+              /**
                * Diálogo con TODAS las citas de todos los libros de la carpeta actual,
                * agrupadas por libro. Cada item muestra: texto, nota (si existe), fecha.
                * v28: pulsar una cita navega a ella si el libro correspondiente está abierto.
@@ -3450,15 +3700,34 @@ jobs:
                * v32: Abre un libro desde la biblioteca (buscándolo por nombre) y, una vez
                * cargado, navega al locator del highlight indicado.
                */
+              /**
+               * v50: Llamado por showBookHighlights / showAllHighlights para saltar a una cita.
+               * Antes de navegar, crea un marcador automatico en el libro actual con la
+               * posicion de lectura actual. Esto permite recuperar la posicion mas tarde
+               * al reabrir el libro desde la biblioteca.
+               */
               private suspend fun openBookAndGoToHighlight(bookName: String, h: Highlight) {
-                  // v48: si hay un libro abierto, guardar su posicion actual EXPLICITAMENTE
-                  // en SharedPreferences ANTES de navegar a la cita. Esto asegura que
-                  // la posicion se persista incluso si el currentLocator.collect no ha
-                  // disparado la ultima emision. Luego marcar para volver atras.
+                  // v50: si hay un libro abierto, crear un marcador con la posicion actual.
+                  // El marcador vive en el sidecar JSON del libro origen (NO en el destino).
+                  // Es completamente independiente de readingpos_ y de las citas.
                   if (readerRoot.visibility == View.VISIBLE && lastLocator != null) {
-                      currentBookName?.let { saveLocator(it, lastLocator!!) }
-                      preHighlightLocator = lastLocator
-                      preHighlightBookName = currentBookName
+                      val srcBook = currentBookName
+                      val srcLoc = lastLocator!!
+                      if (srcBook != null) {
+                          // Crear marcador: si hay varios, nos quedamos solo con el ultimo
+                          // (el mas reciente) para no acumular marcadores obsoletos.
+                          currentBookmarks.clear()
+                          currentBookmarks.add(Bookmark(
+                              id = "bm_${System.currentTimeMillis()}",
+                              locator = srcLoc,
+                              label = "Antes de cita",
+                              createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                          ))
+                          saveSidecarFull(srcBook, currentHighlights.toList(), currentBookmarks.toList())
+                          saveLocator(srcBook, srcLoc)
+                      }
+                      preHighlightLocator = srcLoc
+                      preHighlightBookName = srcBook
                   }
                   // Buscar el libro en la biblioteca activa (carpeta actual incluida).
                   val entry = findLibraryEntryByName(bookName)
@@ -3701,6 +3970,24 @@ jobs:
               android:viewportWidth="24" android:viewportHeight="24">
               <path android:fillColor="#FF424242"
                   android:pathData="M6,17h3l2,-4V7H5v6h3zM14,17h3l2,-4V7h-6v6h3z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_bookmarks.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFFFF"
+                  android:pathData="M17,3H7v18l5,-4 5,4z"/>
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_bookmarks_gray.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FF424242"
+                  android:pathData="M17,3H7v18l5,-4 5,4z"/>
           </vector>
           EOF
 
