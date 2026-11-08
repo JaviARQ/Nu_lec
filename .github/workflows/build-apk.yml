@@ -98,8 +98,8 @@ jobs:
                   applicationId = "com.lector.epub"
                   minSdk = 24
                   targetSdk = 35
-                  versionCode = 48
-                  versionName = "4.9"
+                  versionCode = 49
+                  versionName = "4.9.1"
               }
           
               buildTypes {
@@ -1881,14 +1881,14 @@ jobs:
                       tableOfContents = publication.tableOfContents
                       chapterIndex = 0
           
-                      val sidecarData = loadSidecar(displayName)
-                      // v46: la posicion de lectura SOLO viene de readingpos_ (SharedPreferences).
+                      val initialHighlights = loadHighlightsFromSidecar(displayName)
+                      // v48: la posicion de lectura SOLO viene de readingpos_ (SharedPreferences).
                       // Si venimos de una cita (pendingHighlightLocator), ir a la cita.
                       // Si no, ir a la posicion de lectura guardada.
                       val initialLocator = pendingHighlightLocator ?: loadLocator(displayName)
-                      // Cargar highlights del libro actual (vacío si el sidecar es v1 o no existe).
+                      // Cargar highlights del libro actual (vacío si no hay sidecar).
                       currentHighlights.clear()
-                      currentHighlights.addAll(sidecarData?.second ?: emptyList())
+                      currentHighlights.addAll(initialHighlights)
           
                       libraryRoot.visibility = View.GONE
                       readerRoot.visibility = View.VISIBLE
@@ -1933,13 +1933,8 @@ jobs:
                           // Aplicar brillo especifico de cómic si está activado.
                           applyActiveBrightness()
                           // v32: si venimos de "Todas las citas", navegar al locator pendiente.
-                          pendingHighlightLocator?.let { loc ->
-                              lifecycleScope.launch {
-                                  delay(800)  // Esperar a que el navigator esté listo.
-                                  (navigator as? org.readium.r2.navigator.Navigator)?.go(loc)
-                                  pendingHighlightLocator = null
-                              }
-                          }
+                          // v48: el initialLocator ya es la cita, no hace falta go() extra.
+                          pendingHighlightLocator = null
                           lifecycleScope.launch {
                               frag.currentLocator.collect { locator ->
                                   lastLocator = locator
@@ -1948,7 +1943,7 @@ jobs:
                                       sidecarJob?.cancel()
                                       sidecarJob = appScope.launch {
                                           delay(2000)
-                                          saveSidecar(displayName, locator, currentHighlights.toList())
+                                          saveHighlightsToSidecar(displayName, currentHighlights.toList())
                                       }
                                   }
                                   updateProgress(locator)
@@ -2008,7 +2003,7 @@ jobs:
                                       sidecarJob?.cancel()
                                       sidecarJob = appScope.launch {
                                           delay(2000)
-                                          saveSidecar(displayName, locator, currentHighlights.toList())
+                                          saveHighlightsToSidecar(displayName, currentHighlights.toList())
                                       }
                                   }
                                   updateProgress(locator)
@@ -2221,20 +2216,14 @@ jobs:
               private fun closeBook() {
                   sidecarJob?.cancel()
                   val book = currentBookName
-                  val loc = lastLocator
                   // Snapshot de highlights antes de limpiar para persistirlos.
                   val highlightsSnapshot = currentHighlights.toList()
-                  // v45: si estamos en modo "vista de cita" (navigatingToHighlight),
-                  // NO guardar el locator (que seria el de la cita). Solo guardar highlights
-                  // usando el locator que ya tenia el sidecar (no sobrescribir).
-                  if (book != null && loc != null) {
-                      if (navigatingToHighlight) {
-                          // Vista de cita: guardar highlights pero NO sobrescribir el locator del sidecar.
-                          appScope.launch { saveHighlights(book, highlightsSnapshot) }
-                      } else {
-                          // Lectura normal: guardar locator + highlights.
-                          appScope.launch { saveSidecar(book, loc, highlightsSnapshot) }
-                      }
+                  // v48: SIEMPRE guardar highlights en el sidecar (no hay locator
+                  // en el sidecar, solo highlights). La posicion de lectura vive
+                  // exclusivamente en SharedPreferences (readingpos_<bookName>)
+                  // y se guarda solo cuando navigatingToHighlight = false.
+                  if (book != null) {
+                      appScope.launch { saveHighlightsToSidecar(book, highlightsSnapshot) }
                   }
                   lastLocator = null
                   lastPageIndex = 0
@@ -2467,6 +2456,7 @@ jobs:
                           val nav = navigator as? EpubNavigatorFragment ?: return@setItems
                           // v39: guardar posicion actual antes de saltar al resultado.
                           preHighlightLocator = lastLocator
+                          preHighlightBookName = currentBookName
                           // v47: activar flag antes de saltar para no guardar.
                           navigatingToHighlight = true
                           lifecycleScope.launch { nav.go(loc) }
@@ -2861,6 +2851,9 @@ jobs:
                           preHighlightLocator = null
                           preHighlightBookName = null
                           if (preBook != null && preBook != currentBookName) {
+                              // v48: resetear flag ANTES de reabrir el libro original
+                              // para que se reanude el guardado normal de posicion.
+                              navigatingToHighlight = false
                               // Estabamos en OTRO libro: hay que reabrirlo en la posicion guardada.
                               pendingHighlightLocator = pre
                               val entry = kotlinx.coroutines.runBlocking { findLibraryEntryByName(preBook) }
@@ -2980,13 +2973,18 @@ jobs:
               private fun prefs() = getSharedPreferences("lector_positions", MODE_PRIVATE)
           
               private fun loadLocator(bookName: String): Locator? {
-                  // v45: leer de clave separada "readingpos_" que no se afecta por citas.
+                  // v48: lee la posicion de lectura de SharedPreferences (clave separada
+                  // `readingpos_<bookName>`). Esta es la UNICA fuente de posicion.
+                  // El sidecar JSON ya NO contiene locator (solo highlights), por lo que
+                  // las citas no pueden sobrescribir la posicion de lectura.
                   val json = prefs().getString("readingpos_$bookName", null) ?: return null
                   return runCatching { Locator.fromJSON(JSONObject(json)) }.getOrNull()
               }
           
               private fun saveLocator(bookName: String, locator: Locator) {
-                  // v45: guardar en clave separada "readingpos_" para independizar de citas.
+                  // v48: guarda la posicion de lectura en SharedPreferences (clave separada).
+                  // Se llama solo cuando navigatingToHighlight = false, es decir, durante
+                  // lectura normal (no durante vista de cita).
                   prefs().edit().putString("readingpos_$bookName", locator.toJSON().toString()).apply()
               }
           
@@ -3035,18 +3033,17 @@ jobs:
                   }
               }
           
-              private suspend fun loadSidecar(bookName: String): Pair<Locator?, List<Highlight>>? {
-                  val uri = findSidecarUri(bookName) ?: return null
+              private suspend fun loadHighlightsFromSidecar(bookName: String): List<Highlight> {
+                  // v48: lee SOLO los highlights del sidecar JSON. La posicion de lectura
+                  // ya no se guarda aqui (vive en SharedPreferences readingpos_<bookName>).
+                  // Backward-compat: sidecars viejos con campo `locator` se ignoran.
+                  val uri = findSidecarUri(bookName) ?: return emptyList()
                   return withContext(Dispatchers.IO) {
                       val text = contentResolver.openInputStream(uri)?.use {
                           it.readBytes().toString(Charsets.UTF_8)
-                      } ?: return@withContext null
+                      } ?: return@withContext emptyList()
                       try {
                           val json = JSONObject(text)
-                          val locator = runCatching {
-                              json.optJSONObject("locator")?.let { Locator.fromJSON(it) }
-                          }.getOrNull()
-                          // v2: array `highlights`. JSONs viejos (v1) no tienen el campo → array vacío.
                           val highlights = mutableListOf<Highlight>()
                           val arr = json.optJSONArray("highlights")
                           if (arr != null) {
@@ -3055,9 +3052,9 @@ jobs:
                                   jsonToHighlight(hj)?.let { highlights.add(it) }
                               }
                           }
-                          locator to highlights.toList()
+                          highlights.toList()
                       } catch (_: Throwable) {
-                          null
+                          emptyList()
                       }
                   }
               }
@@ -3086,7 +3083,11 @@ jobs:
                   put("createdAt", h.createdAt)
               }
           
-              private suspend fun saveSidecar(bookName: String, locator: Locator, highlights: List<Highlight> = emptyList()) {
+              private suspend fun saveHighlightsToSidecar(bookName: String, highlights: List<Highlight>) {
+                  // v48: guarda SOLO highlights en el sidecar JSON. Sin locator.
+                  // La posicion de lectura vive en SharedPreferences (readingpos_<bookName>).
+                  // Esto independiza completamente las citas de la posicion de lectura:
+                  // añadir/eliminar/modificar citas NUNCA toca la posicion guardada.
                   val tree = bookTreeUri() ?: return
                   val folderUri = currentBookFolderUri ?: tree
                   val sidecarName = bookName.substringBeforeLast('.') + ".json"
@@ -3095,9 +3096,8 @@ jobs:
                       arr.put(highlightToJson(h))
                   }
                   val json = JSONObject().apply {
-                      put("version", 2)
+                      put("version", 3)  // v48: version 3 = sin locator (solo highlights)
                       put("bookName", bookName)
-                      put("locator", locator.toJSON())
                       put("updatedAt",
                           SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
                       put("highlights", arr)
@@ -3133,21 +3133,21 @@ jobs:
           
               // ===== HIGHLIGHTS (citas) =====
           
-              /** Carga los highlights de un sidecar JSON (vacío si no existe o es v1). */
+              /** Carga los highlights de un sidecar JSON (vacío si no existe). */
               private suspend fun loadHighlights(bookName: String): List<Highlight> {
-                  return loadSidecar(bookName)?.second ?: emptyList()
+                  return loadHighlightsFromSidecar(bookName)
               }
           
               /**
                * Persiste la lista de highlights en el sidecar JSON del libro.
-               * Reusa el último locator conocido para no perder la posición al
-               * añadir / eliminar una cita sin moverse en el libro.
+               * v48: ya no toma locator. Las citas y la posicion viven en almacenes
+               * totalmente separados: highlights en sidecar JSON, posicion en
+               * SharedPreferences readingpos_<bookName>.
                */
               private suspend fun saveHighlights(bookName: String, highlights: List<Highlight>) {
-                  val loc = lastLocator ?: return
                   currentHighlights.clear()
                   currentHighlights.addAll(highlights)
-                  saveSidecar(bookName, loc, currentHighlights.toList())
+                  saveHighlightsToSidecar(bookName, currentHighlights.toList())
               }
           
               /** Añade un highlight al libro actual y lo persiste. */
@@ -3161,19 +3161,13 @@ jobs:
                       createdAt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                   )
                   currentHighlights.add(h)
-                  val loc = locator ?: lastLocator
-                  if (loc != null) {
-                      saveSidecar(bookName, loc, currentHighlights.toList())
-                  }
+                  saveHighlightsToSidecar(bookName, currentHighlights.toList())
               }
           
               /** Elimina un highlight por id y persiste el sidecar actualizado. */
               private suspend fun removeHighlight(bookName: String, highlightId: String) {
                   currentHighlights.removeAll { it.id == highlightId }
-                  val loc = lastLocator
-                  if (loc != null) {
-                      saveSidecar(bookName, loc, currentHighlights.toList())
-                  }
+                  saveHighlightsToSidecar(bookName, currentHighlights.toList())
               }
           
               /**
@@ -3289,7 +3283,10 @@ jobs:
                                       Toast.makeText(ctx, "Cita sin posición válida", Toast.LENGTH_SHORT).show()
                                       return@setOnClickListener
                                   }
-                                  // v47: activar flag antes de saltar para no guardar.
+                                  // v48: guardar posicion actual y activar flag para no sobrescribirla.
+                                  // Esto permite volver atras a la posicion anterior con el boton Back.
+                                  preHighlightLocator = lastLocator
+                                  preHighlightBookName = currentBookName
                                   navigatingToHighlight = true
                                   dialog?.dismiss()
                                   lifecycleScope.launch { nav.go(loc) }
@@ -3454,8 +3451,12 @@ jobs:
                * cargado, navega al locator del highlight indicado.
                */
               private suspend fun openBookAndGoToHighlight(bookName: String, h: Highlight) {
-                  // v39: si hay un libro abierto, guardar su posicion para poder volver.
+                  // v48: si hay un libro abierto, guardar su posicion actual EXPLICITAMENTE
+                  // en SharedPreferences ANTES de navegar a la cita. Esto asegura que
+                  // la posicion se persista incluso si el currentLocator.collect no ha
+                  // disparado la ultima emision. Luego marcar para volver atras.
                   if (readerRoot.visibility == View.VISIBLE && lastLocator != null) {
+                      currentBookName?.let { saveLocator(it, lastLocator!!) }
                       preHighlightLocator = lastLocator
                       preHighlightBookName = currentBookName
                   }
@@ -3467,8 +3468,10 @@ jobs:
                   }
                   // Guardar el locator pendiente para navegar tras abrir.
                   pendingHighlightLocator = h.locator
-                  // v47: activar el flag ANTES de abrir, para que el primer
+                  // v48: activar el flag ANTES de abrir, para que el primer
                   // currentLocator.collect ya lo respete y no guarde la cita como posicion.
+                  // La posicion guardada del libro destino (readingpos_<destBook>) NO se
+                  // modifica durante la vista de cita, solo se reanuda el guardado al volver.
                   navigatingToHighlight = true
                   // Abrir el libro (sincrono: espera a que el navigator esté listo).
                   openFromLibrary(entry)
@@ -3476,8 +3479,10 @@ jobs:
           
               /** Locator pendiente de aplicar tras abrir un libro desde "Todas las citas". */
               private var pendingHighlightLocator: Locator? = null
-              /** Flag: cuando es true, el currentLocator.collect NO guarda la posicion
-               *  (estamos navegando a una cita, no queremos sobrescribir la posicion de lectura). */
+              /** v48: Flag que indica que estamos en modo "vista de cita". Cuando es true,
+               *  el currentLocator.collect NO guarda la posicion (no queremos sobrescribir
+               *  la posicion de lectura con la cita). Se resetea a false al volver atras
+               *  (onBackPressed, ambas ramas: mismo libro y otro libro) o al cerrar libro. */
               private var navigatingToHighlight: Boolean = false
               /** Posicion de lectura anterior al salto a una cita (para volver con Atras). */
               private var preHighlightLocator: Locator? = null
